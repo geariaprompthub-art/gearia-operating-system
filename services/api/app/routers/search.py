@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.search import SearchResponse, SearchSortBy, SortOrder
+from app.schemas.hybrid_search import HybridSearchRequest, HybridSearchResponse
 from app.schemas.vector_search import VectorSearchRequest, VectorSearchResponse
+from app.services.hybrid_search_dependencies import get_hybrid_search_service
+from app.services.hybrid_search_service import HybridSearchService
 from app.services.search_service import SearchService
 from app.services.vector_search_dependencies import get_vector_search_service
 from app.services.vector_search_service import VectorSearchService
@@ -78,3 +81,27 @@ def search_vector(
         return service.search(request.query, request.top_k, request.threshold)
     except RuntimeError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector search unavailable") from error
+
+
+@router.post(
+    "/hybrid",
+    response_model=HybridSearchResponse,
+    summary="Search content with lexical and vector retrieval",
+    responses={
+        422: {"description": "Invalid hybrid-search request"},
+        503: {"description": "Hybrid retrieval dependency unavailable"},
+        500: {"description": "Unexpected hybrid retrieval failure"},
+    },
+)
+def search_hybrid(
+    request: HybridSearchRequest,
+    service: HybridSearchService = Depends(get_hybrid_search_service),
+) -> dict[str, object]:
+    """Delegate hybrid orchestration while keeping provider and retrieval details private."""
+
+    try:
+        return service.search(request.query, request.top_k)
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Hybrid retrieval unavailable") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Hybrid retrieval failed") from error

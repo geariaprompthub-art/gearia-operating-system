@@ -17,7 +17,7 @@ TEXT_STRATEGY_VERSION = "content-text-v1"
 
 
 @dataclass(frozen=True)
-class VectorSearchCandidate:
+class EmbeddingEligibilityRecord:
     """Metadata required to determine whether a persisted vector is usable."""
 
     content: Content
@@ -31,8 +31,16 @@ class VectorSearchCandidate:
 
 
 @dataclass(frozen=True)
+class VectorSearchCandidate:
+    """Internal ranked vector candidate with the minimum hybrid-retrieval contract."""
+
+    content_id: UUID
+    similarity: float
+
+
+@dataclass(frozen=True)
 class VectorSearchRecord:
-    """A vector-search row intentionally excluding the embedding value."""
+    """Content metadata used to hydrate a ranked vector candidate."""
 
     content_id: UUID
     source_id: UUID
@@ -48,7 +56,6 @@ class VectorSearchRecord:
     relevance_score: int | None
     processing_status: str
     created_at: datetime
-    similarity: float
 
 
 class VectorSearchRepository:
@@ -57,7 +64,7 @@ class VectorSearchRepository:
     def __init__(self, database: Session) -> None:
         self._database = database
 
-    def eligible_candidates(self) -> list[VectorSearchCandidate]:
+    def eligible_embedding_records(self) -> list[EmbeddingEligibilityRecord]:
         """Return metadata-only candidates; vector values are never loaded here."""
 
         statement = (
@@ -85,7 +92,7 @@ class VectorSearchRepository:
             )
         )
         return [
-            VectorSearchCandidate(
+            EmbeddingEligibilityRecord(
                 content=content,
                 content_hash=embedding.content_hash,
                 status=embedding.embedding_status,
@@ -98,9 +105,9 @@ class VectorSearchRepository:
             for embedding, content in self._database.execute(statement)
         ]
 
-    def search(
+    def search_candidates(
         self, query_vector: list[float], eligible_ids: list[UUID], top_k: int, threshold: float
-    ) -> list[VectorSearchRecord]:
+    ) -> list[VectorSearchCandidate]:
         """Search only prevalidated IDs using PostgreSQL cosine distance."""
 
         if not eligible_ids:
@@ -108,8 +115,7 @@ class VectorSearchRepository:
         distance = ContentEmbedding.embedding.cosine_distance(query_vector)
         similarity = (literal(1.0) - distance).label("similarity")
         statement = (
-            select(Content, similarity)
-            .join(ContentEmbedding, ContentEmbedding.content_id == Content.id)
+            select(ContentEmbedding.content_id, similarity)
             .where(
                 ContentEmbedding.content_id.in_(eligible_ids),
                 ContentEmbedding.embedding_status == "completed",
@@ -120,11 +126,22 @@ class VectorSearchRepository:
                 ContentEmbedding.text_strategy_version == TEXT_STRATEGY_VERSION,
                 similarity >= threshold,
             )
-            .order_by(distance.asc(), Content.id.asc())
+            .order_by(distance.asc(), ContentEmbedding.content_id.asc())
             .limit(top_k)
         )
         return [
-            VectorSearchRecord(
+            VectorSearchCandidate(content_id=content_id, similarity=float(score))
+            for content_id, score in self._database.execute(statement)
+        ]
+
+    def hydrate(self, content_ids: list[UUID]) -> dict[UUID, VectorSearchRecord]:
+        """Fetch content metadata once; callers preserve the ranked candidate order."""
+
+        if not content_ids:
+            return {}
+        rows = self._database.scalars(select(Content).where(Content.id.in_(content_ids)))
+        return {
+            content.id: VectorSearchRecord(
                 content_id=content.id,
                 source_id=content.source_id,
                 title=content.title,
@@ -139,7 +156,6 @@ class VectorSearchRepository:
                 relevance_score=content.relevance_score,
                 processing_status=content.processing_status,
                 created_at=content.created_at,
-                similarity=float(score),
             )
-            for content, score in self._database.execute(statement)
-        ]
+            for content in rows
+        }

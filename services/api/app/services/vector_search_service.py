@@ -2,16 +2,9 @@
 
 from math import isfinite
 
-from app.repositories.vector_search_repository import (
-    EMBEDDING_DIMENSIONS,
-    EMBEDDING_MODEL,
-    EMBEDDING_PROVIDER,
-    TEXT_STRATEGY_VERSION,
-    VectorSearchCandidate,
-    VectorSearchRecord,
-    VectorSearchRepository,
-)
-from app.services.embedding_provider import EmbeddingProvider, build_content_embedding_text, content_hash
+from app.repositories.vector_search_repository import VectorSearchCandidate, VectorSearchRecord, VectorSearchRepository
+from app.services.embedding_provider import EmbeddingProvider
+from app.services.vector_candidate_service import VectorCandidateService
 
 
 class VectorSearchService:
@@ -19,44 +12,20 @@ class VectorSearchService:
 
     def __init__(self, repository: VectorSearchRepository, provider: EmbeddingProvider) -> None:
         self._repository = repository
-        self._provider = provider
-
-    @staticmethod
-    def _is_eligible(candidate: VectorSearchCandidate) -> bool:
-        """Apply fixed compatibility and current-hash checks before vector SQL."""
-
-        current_hash = content_hash(build_content_embedding_text(candidate.content))
-        return (
-            candidate.status == "completed"
-            and candidate.has_embedding
-            and candidate.provider == EMBEDDING_PROVIDER
-            and candidate.model == EMBEDDING_MODEL
-            and candidate.dimensions == EMBEDDING_DIMENSIONS
-            and candidate.text_strategy_version == TEXT_STRATEGY_VERSION
-            and candidate.content_hash == current_hash
-        )
+        self._candidates = VectorCandidateService(repository, provider)
 
     def search(self, query: str, top_k: int, threshold: float) -> dict[str, object]:
         """Return ranked public metadata without mutating content or embeddings."""
 
         normalized_query = query.strip()
-        vector = self._provider.embed_text(normalized_query)
-        if len(vector) != EMBEDDING_DIMENSIONS or not all(isfinite(float(value)) for value in vector):
-            raise RuntimeError("Invalid query embedding")
-        eligible_ids = [
-            candidate.content.id
-            for candidate in self._repository.eligible_candidates()
-            if self._is_eligible(candidate)
-        ]
-        if not eligible_ids:
-            return {"query": normalized_query, "top_k": top_k, "threshold": threshold, "total": 0, "items": []}
-        records = self._repository.search(vector, eligible_ids, top_k, threshold)
-        finite_records = [record for record in records if isfinite(record.similarity)]
-        items = [self._public_item(record, rank) for rank, record in enumerate(finite_records, start=1)]
+        candidates = self._candidates.search(normalized_query, top_k, threshold)
+        records = self._repository.hydrate([candidate.content_id for candidate in candidates])
+        finite_candidates = [candidate for candidate in candidates if isfinite(candidate.similarity) and candidate.content_id in records]
+        items = [self._public_item(records[candidate.content_id], candidate, rank) for rank, candidate in enumerate(finite_candidates, start=1)]
         return {"query": normalized_query, "top_k": top_k, "threshold": threshold, "total": len(items), "items": items}
 
     @staticmethod
-    def _public_item(record: VectorSearchRecord, rank: int) -> dict[str, object]:
+    def _public_item(record: VectorSearchRecord, candidate: VectorSearchCandidate, rank: int) -> dict[str, object]:
         """Map a repository record to safe response metadata."""
 
         return {
@@ -74,6 +43,6 @@ class VectorSearchService:
             "relevance_score": record.relevance_score,
             "processing_status": record.processing_status,
             "created_at": record.created_at,
-            "similarity": record.similarity,
+            "similarity": candidate.similarity,
             "rank": rank,
         }

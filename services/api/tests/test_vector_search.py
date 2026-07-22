@@ -8,10 +8,11 @@ from app.db import SessionLocal
 from app.models.content import Content
 from app.models.content_embedding import ContentEmbedding
 from app.models.source import Source
-from app.repositories.vector_search_repository import VectorSearchCandidate, VectorSearchRecord, VectorSearchRepository
+from app.repositories.vector_search_repository import EmbeddingEligibilityRecord, VectorSearchCandidate, VectorSearchRecord, VectorSearchRepository
 from app.services.embedding_provider import build_content_embedding_text, content_hash
 from app.services.fake_embedding_provider import FakeEmbeddingProvider
 from app.services.vector_search_dependencies import get_vector_search_service
+from app.services.vector_candidate_service import VectorCandidateService
 from app.services.vector_search_service import VectorSearchService
 from test_main import client
 
@@ -42,7 +43,7 @@ def _content(identifier: UUID | None = None, title: str = "Vector content") -> C
     )
 
 
-def _candidate(content: Content, **overrides: object) -> VectorSearchCandidate:
+def _candidate(content: Content, **overrides: object) -> EmbeddingEligibilityRecord:
     """Create a default eligible candidate, with targeted incompatibilities optional."""
 
     values: dict[str, object] = {
@@ -56,10 +57,10 @@ def _candidate(content: Content, **overrides: object) -> VectorSearchCandidate:
         "has_embedding": True,
     }
     values.update(overrides)
-    return VectorSearchCandidate(**values)  # type: ignore[arg-type]
+    return EmbeddingEligibilityRecord(**values)  # type: ignore[arg-type]
 
 
-def _record(content: Content, similarity: float) -> VectorSearchRecord:
+def _record(content: Content) -> VectorSearchRecord:
     """Build a repository result without carrying any vector value."""
 
     return VectorSearchRecord(
@@ -77,34 +78,50 @@ def _record(content: Content, similarity: float) -> VectorSearchRecord:
         relevance_score=content.relevance_score,
         processing_status=content.processing_status,
         created_at=content.created_at,
-        similarity=similarity,
     )
 
 
 class FakeVectorSearchRepository:
     """Repository double that records inputs and never touches a database."""
 
-    def __init__(self, candidates: list[VectorSearchCandidate], records: list[VectorSearchRecord]) -> None:
+    def __init__(self, candidates: list[EmbeddingEligibilityRecord], records: list[VectorSearchRecord], ranked: list[VectorSearchCandidate]) -> None:
         self.candidates = candidates
         self.records = records
+        self.ranked = ranked
         self.search_calls = 0
         self.last_eligible_ids: list[UUID] | None = None
         self.last_threshold: float | None = None
         self.last_top_k: int | None = None
 
-    def eligible_candidates(self) -> list[VectorSearchCandidate]:
+    def eligible_embedding_records(self) -> list[EmbeddingEligibilityRecord]:
         return self.candidates
 
-    def search(self, query_vector: list[float], eligible_ids: list[UUID], top_k: int, threshold: float) -> list[VectorSearchRecord]:
+    def search_candidates(self, query_vector: list[float], eligible_ids: list[UUID], top_k: int, threshold: float) -> list[VectorSearchCandidate]:
         self.search_calls += 1
         self.last_eligible_ids = eligible_ids
         self.last_threshold = threshold
         self.last_top_k = top_k
         matches = [
-            record for record in self.records
-            if record.content_id in eligible_ids and isfinite(record.similarity) and record.similarity >= threshold
+            candidate for candidate in self.ranked
+            if candidate.content_id in eligible_ids and isfinite(candidate.similarity) and candidate.similarity >= threshold
         ]
-        return sorted(matches, key=lambda record: (-record.similarity, record.content_id))[:top_k]
+        return sorted(matches, key=lambda candidate: (-candidate.similarity, candidate.content_id))[:top_k]
+
+    def hydrate(self, content_ids: list[UUID]) -> dict[UUID, VectorSearchRecord]:
+        return {record.content_id: record for record in self.records if record.content_id in content_ids}
+
+
+def test_vector_candidate_service_returns_only_ranked_candidate_contract() -> None:
+    """The reusable layer exposes only content_id and similarity to future retrieval flows."""
+
+    content = _content(title="candidate")
+    repository = FakeVectorSearchRepository(
+        [_candidate(content)], [_record(content)], [VectorSearchCandidate(content.id, 0.7)]
+    )
+    candidates = VectorCandidateService(repository, FakeEmbeddingProvider()).search("query", 50, 0.0)
+    assert candidates == [VectorSearchCandidate(content_id=content.id, similarity=0.7)]
+    assert tuple(candidates[0].__dataclass_fields__) == ("content_id", "similarity")
+    assert repository.search_calls == 1
 
 
 def test_vector_search_normalizes_query_ranks_results_and_calls_provider_once() -> None:
@@ -115,7 +132,8 @@ def test_vector_search_normalizes_query_ranks_results_and_calls_provider_once() 
     third = _content(UUID("00000000-0000-0000-0000-000000000003"), "Third")
     repository = FakeVectorSearchRepository(
         [_candidate(first), _candidate(second), _candidate(third)],
-        [_record(second, 0.9), _record(first, 0.9), _record(third, nan)],
+        [_record(second), _record(first), _record(third)],
+        [VectorSearchCandidate(second.id, 0.9), VectorSearchCandidate(first.id, 0.9), VectorSearchCandidate(third.id, nan)],
     )
     provider = FakeEmbeddingProvider()
     result = VectorSearchService(repository, provider).search("  automation  ", top_k=2, threshold=0.5)
@@ -144,10 +162,10 @@ def test_vector_search_excludes_ineligible_candidates_and_skips_empty_vector_que
         _candidate(_content(title="dimensions"), dimensions=2),
         _candidate(_content(title="null-vector"), has_embedding=False),
     ]
-    repository = FakeVectorSearchRepository(candidates, [_record(usable, 0.75)])
+    repository = FakeVectorSearchRepository(candidates, [_record(usable)], [VectorSearchCandidate(usable.id, 0.75)])
     result = VectorSearchService(repository, FakeEmbeddingProvider()).search("query", 20, 0.0)
     assert repository.last_eligible_ids == [usable.id] and result["total"] == 1
-    empty_repository = FakeVectorSearchRepository([_candidate(_content(), status="failed")], [])
+    empty_repository = FakeVectorSearchRepository([_candidate(_content(), status="failed")], [], [])
     empty = VectorSearchService(empty_repository, FakeEmbeddingProvider()).search("query", 20, 0.0)
     assert empty["items"] == [] and empty_repository.search_calls == 0
 
@@ -155,7 +173,7 @@ def test_vector_search_excludes_ineligible_candidates_and_skips_empty_vector_que
 def test_vector_search_rejects_provider_failures_empty_and_invalid_vectors() -> None:
     """Provider failures cannot create a result or cause database persistence."""
 
-    repository = FakeVectorSearchRepository([], [])
+    repository = FakeVectorSearchRepository([], [], [])
     for provider in (
         FakeEmbeddingProvider(fail=True),
         FakeEmbeddingProvider(dimensions=0),
@@ -176,7 +194,7 @@ def test_vector_search_http_contract_is_safe_and_validates_payloads() -> None:
 
     content = _content(title="HTTP")
     provider = FakeEmbeddingProvider()
-    repository = FakeVectorSearchRepository([_candidate(content)], [_record(content, 0.8)])
+    repository = FakeVectorSearchRepository([_candidate(content)], [_record(content)], [VectorSearchCandidate(content.id, 0.8)])
     from app.main import app
     app.dependency_overrides[get_vector_search_service] = lambda: VectorSearchService(repository, provider)
     try:
@@ -206,7 +224,7 @@ def test_vector_search_http_sanitizes_provider_and_vector_failures() -> None:
         FakeEmbeddingProvider(dimensions=2),
         FakeEmbeddingProvider(vector_values=[nan] * 1536),
     ):
-        repository = FakeVectorSearchRepository([], [])
+        repository = FakeVectorSearchRepository([], [], [])
         app.dependency_overrides[get_vector_search_service] = lambda provider=provider: VectorSearchService(repository, provider)
         try:
             response = client.post("/search/vector", json={"query": "query"})
@@ -221,7 +239,7 @@ def test_vector_search_http_input_matrix_and_extra_fields_policy() -> None:
 
     content = _content(title="matrix")
     provider = FakeEmbeddingProvider()
-    repository = FakeVectorSearchRepository([_candidate(content)], [_record(content, 1.0)])
+    repository = FakeVectorSearchRepository([_candidate(content)], [_record(content)], [VectorSearchCandidate(content.id, 1.0)])
     from app.main import app
     app.dependency_overrides[get_vector_search_service] = lambda: VectorSearchService(repository, provider)
     try:
@@ -270,11 +288,12 @@ def test_vector_search_repository_uses_pgvector_cosine_threshold_in_rolled_back_
             database.add(ContentEmbedding(content_id=content.id, embedding=vector, content_hash=content_hash(build_content_embedding_text(content)), embedding_status="completed", embedded_at=now))
         database.flush()
         repository = VectorSearchRepository(database)
-        eligible_ids = [candidate.content.id for candidate in repository.eligible_candidates()]
-        rows = repository.search([1.0] + [0.0] * 1535, eligible_ids, top_k=10, threshold=0.8)
-        assert [row.title for row in rows] == ["identical", "near"]
-        assert rows[0].similarity == 1.0 and rows[1].similarity >= 0.8
-        assert all(isfinite(row.similarity) for row in rows)
+        eligible_ids = [candidate.content.id for candidate in repository.eligible_embedding_records()]
+        candidates = repository.search_candidates([1.0] + [0.0] * 1535, eligible_ids, top_k=10, threshold=0.8)
+        records = repository.hydrate([candidate.content_id for candidate in candidates])
+        assert [records[candidate.content_id].title for candidate in candidates] == ["identical", "near"]
+        assert candidates[0].similarity == 1.0 and candidates[1].similarity >= 0.8
+        assert all(isfinite(candidate.similarity) for candidate in candidates)
     finally:
         database.rollback()
         database.close()

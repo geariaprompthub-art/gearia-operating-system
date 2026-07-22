@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     embedding_distance_metric: str = "cosine"
     embedding_batch_size: int = Field(default=50, ge=1, le=500)
     embedding_max_input_characters: int = Field(default=20000, ge=1, le=20000)
+    hybrid_lexical_candidate_k: int = Field(default=50, ge=1, le=500)
+    hybrid_vector_candidate_k: int = Field(default=50, ge=1, le=500)
+    hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
