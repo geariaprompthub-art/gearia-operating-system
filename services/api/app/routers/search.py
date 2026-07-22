@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.search import SearchResponse, SearchSortBy, SortOrder
+from app.schemas.vector_search import VectorSearchRequest, VectorSearchResponse
 from app.services.search_service import SearchService
+from app.services.vector_search_dependencies import get_vector_search_service
+from app.services.vector_search_service import VectorSearchService
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
@@ -54,3 +57,24 @@ def search_contents(
         published_to=published_to, page=page, page_size=page_size,
         sort_by=sort_by, sort_order=sort_order,
     )
+
+
+@router.post(
+    "/vector",
+    response_model=VectorSearchResponse,
+    summary="Search content by exact cosine similarity",
+    responses={
+        422: {"description": "Invalid vector-search request"},
+        503: {"description": "Embedding provider unavailable"},
+    },
+)
+def search_vector(
+    request: VectorSearchRequest,
+    service: VectorSearchService = Depends(get_vector_search_service),
+) -> dict[str, object]:
+    """Perform side-effect-free vector retrieval using an ephemeral query vector."""
+
+    try:
+        return service.search(request.query, request.top_k, request.threshold)
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector search unavailable") from error

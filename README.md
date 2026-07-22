@@ -19,6 +19,7 @@ As relações permanecem determinísticas. A Sprint 07 acrescenta a fundação d
 embeddings com pgvector e geração controlada por provider; ela não implementa
 retrieval, RAG, IA externa em testes, Neo4j ou recomendações personalizadas.
 O contrato completo da Sprint 07 está em `docs/sprint-07-embedding-foundation.md`.
+O contrato da busca vetorial exata da Sprint 08 está em `docs/sprint-08-vector-retrieval.md`.
 
 Principais endpoints:
 
