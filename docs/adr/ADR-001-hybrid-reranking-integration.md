@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposto
+Aceito
 
 ## Contexto
 
@@ -15,18 +15,16 @@ compará-los.
 
 O merge atual preserva os seeds RRF antes dos candidatos Graph. A
 deduplicação por primeira ocorrência garante que um seed RRF vence uma
-duplicata vinda do Graph. Se o RRF for ampliado para 100 candidatos e o Graph
-for apenas anexado depois, os 100 lugares do pool do
-`HybridRerankingPipeline` serão ocupados pelos seeds e os candidatos Graph
-inéditos não chegarão ao reranking. Esse é um caso de starvation total de
-Graph.
+duplicata vinda do Graph. Usar RRF com 100 candidatos e anexar Graph depois
+ocuparia os 100 lugares do pool do `HybridRerankingPipeline` com seeds e
+causaria starvation total de candidatos Graph inéditos.
 
 O `HybridRerankingPipeline` já existe de forma isolada. Ele encapsula
 elegibilidade, pool máximo de 100 candidatos, hidratação parcial, formatação,
 reranking, aplicação final de `top_k` e hidratação pública. O pipeline ainda
 não está integrado ao `HybridSearchService`.
 
-O protocolo `RerankingProvider` existe, mas não há adapter de produção,
+O protocolo `RerankingProvider` existe, mas ainda não há adapter de produção,
 factory de injeção de dependência, setting ou variável de ambiente para
 reranking. O `EmbeddingProvider` não é compatível: ele gera vetores a partir
 de texto, enquanto `RerankingProvider` recebe query e candidatos e devolve
@@ -36,57 +34,91 @@ O contrato HTTP atual de `POST /search/hybrid` não deve ser alterado.
 
 ## Decisão 1 — Provider de produção
 
-O provider de produção será um adapter para um serviço externo dedicado de
-reranking que implemente o protocolo `RerankingProvider`.
+O provider de produção será um adapter dedicado para Voyage AI, usando o
+modelo inicial `rerank-2.5-lite` e implementando o protocolo
+`RerankingProvider`.
 
 - O `EmbeddingProvider` não será reutilizado.
-- O `RerankingService` não será acoplado diretamente ao SDK de um fornecedor.
+- O `RerankingService` não será acoplado diretamente ao SDK da Voyage AI.
 - O adapter será construído por injeção de dependência.
 - O provider poderá ser substituído sem alterar o pipeline.
-- Os testes usarão um fake provider injetado, sem chamadas externas.
-- Falhas operacionais permanecerão fail-closed.
+- Os testes injetarão um fake provider sem chamadas externas.
+- Tipos do SDK Voyage não atravessarão a fronteira do domínio.
+- O provider fará uma chamada por execução do pipeline.
+- Não haverá retry automático na primeira versão.
 - Não haverá fallback silencioso para a ordem anterior ao reranking.
 
-Fornecedor, modelo, endpoint, credencial, nome de variável de ambiente,
-timeout, retry e custo máximo permanecem indefinidos.
+### Configuração aprovada
+
+```text
+RERANKING_PROVIDER=voyage
+VOYAGE_API_KEY=<secret>
+VOYAGE_RERANK_MODEL=rerank-2.5-lite
+RERANKING_TIMEOUT_SECONDS=5
+```
+
+### Política operacional
+
+Provider ausente ou mal configurado, timeout, autenticação inválida, rate
+limit, indisponibilidade, resposta incompleta e resposta inválida são falhas
+operacionais. Futuramente, elas resultarão em HTTP 503 sanitizado.
+
+O `RerankingService` continua responsável por validar completude e unicidade
+da resposta. Não serão registrados API key, documentos completos ou resposta
+bruta sensível. Preço, limites e disponibilidade são externos e podem mudar;
+esses valores não pertencem aos settings nem aos contratos de domínio.
 
 ## Decisão 2 — Pool pré-reranking
 
-O `top_k` público não limitará o horizonte interno do RRF. O fluxo alvo será:
+O `top_k` público não limitará o horizonte interno do RRF. O horizonte máximo
+desejado de candidatos consolidados antes do pipeline é:
 
 ```text
-Lexical + Vector
-→ RRF
-→ Graph Expansion
-→ merge
-→ deduplicação
-→ formação de pool consolidado
-→ limite máximo de 100
-→ HybridRerankingPipeline
-→ top_k público
-→ resposta pública
+H = min(100, max(20, 5 * top_k))
 ```
 
-As regras do pool são:
+Onde `H` é limitado pelo cap absoluto de 100 já adotado pelo
+`HybridRerankingPipeline`.
 
-- RRF e Graph disputarão o mesmo reranking.
-- Graph não poderá sofrer starvation sistemático.
-- Nenhuma fonte poderá ocupar antecipadamente todas as 100 posições.
-- O pool consolidado terá no máximo 100 candidatos.
-- A deduplicação será feita por `content_id` e a primeira ocorrência vencerá.
-- Seeds RRF precederão duplicatas vindas do Graph.
-- Somente candidatos Graph inéditos ocuparão vagas destinadas a Graph.
-- Se uma fonte não preencher sua parcela, a outra poderá preencher vagas
-  ociosas.
-- `top_k` será aplicado somente após o reranking.
-- Quando o total disponível for menor que `top_k`, não haverá backfill
-  artificial.
-- Elegibilidade, hidratação parcial, formatação, reranking, `top_k` e
-  hidratação pública continuarão como responsabilidades do
-  `HybridRerankingPipeline`.
+O orçamento inicial é:
 
-A divisão exata entre RRF e Graph permanece indefinida: não foi escolhida uma
-quantidade, percentual, fórmula, setting ou constante.
+```text
+graph_budget = ceil(H * 0.20)
+rrf_budget = H - graph_budget
+```
+
+RRF recebe orçamento-base de 80% e Graph recebe orçamento-base de 20%. Uma
+fonte só pode ocupar vagas da outra quando houver ociosidade.
+
+| top_k | H | RRF | Graph |
+| ---: | ---: | ---: | ---: |
+| 1 | 20 | 16 | 4 |
+| 5 | 25 | 20 | 5 |
+| 10 | 50 | 40 | 10 |
+| 20 | 100 | 80 | 20 |
+| 80 | 100 | 80 | 20 |
+| 100 | 100 | 80 | 20 |
+
+### Deduplicação e preenchimento
+
+- Deduplicar por `content_id`.
+- A primeira ocorrência vence.
+- RRF precede Graph quando o mesmo `content_id` aparece em ambas as fontes.
+- Duplicatas Graph de candidatos RRF não consomem `graph_budget`.
+- Somente candidatos Graph inéditos contam para o orçamento Graph.
+- Preservar a ordem interna de cada fonte.
+- Selecionar até `rrf_budget` candidatos RRF únicos.
+- Selecionar até `graph_budget` candidatos Graph inéditos.
+- Se Graph não preencher sua reserva, completar a sobra com RRF remanescente.
+- Se RRF não preencher sua reserva, completar a sobra com Graph remanescente.
+- Nunca ultrapassar `H` nem o cap absoluto de 100.
+- Não produzir backfill artificial.
+- Se o total disponível for menor que `top_k`, devolver somente o disponível.
+- Aplicar `top_k` somente após reranking.
+
+Elegibilidade, hidratação parcial, formatação, reranking, `top_k` e
+hidratação pública continuam como responsabilidades do
+`HybridRerankingPipeline`.
 
 ## Alternativas consideradas
 
@@ -103,14 +135,13 @@ starvation total de candidatos Graph inéditos.
 
 ### 3. Reserva fixa sem preenchimento
 
-Adiada. Evita starvation, mas pode deixar vagas vazias quando uma fonte não
-possui candidatos suficientes. A reserva numérica não foi decidida.
+Rejeitada. Embora evite starvation, pode deixar vagas ociosas quando uma fonte
+não possui candidatos suficientes.
 
 ### 4. Reserva com preenchimento balanceado
 
-Direção arquitetural aprovada, com orçamento exato pendente. Preserva a
-participação de ambas as fontes e permite preencher vagas ociosas sem exceder
-100 candidatos. A divisão fixa ou proporcional ainda exige decisão de produto.
+Aceita. A divisão inicial é 80% RRF e 20% Graph, com preenchimento por
+remanescente da outra fonte somente em caso de ociosidade.
 
 ### 5. Modelo local
 
@@ -124,38 +155,36 @@ infraestrutura de embeddings sem compatibilidade funcional.
 
 ### 7. Adiar a integração
 
-Alternativa válida enquanto fornecedor, configuração e orçamento do pool não
-forem definidos. Evita introduzir provider fictício ou constantes arbitrárias.
+Rejeitada como decisão arquitetural. A estratégia de integração, provider,
+modelo, configuração e orçamento inicial foram definidos por este ADR; a
+implementação ainda requer fase própria.
 
 ## Consequências positivas
 
-- RRF e Graph podem disputar o mesmo reranking.
-- Evita starvation sistemático de Graph.
-- Permite promover candidatos abaixo do `top_k` inicial.
-- Desacopla o fornecedor do pipeline e do `RerankingService`.
-- Permite testes determinísticos com fake provider e sem chamadas externas.
-- Preserva o contrato HTTP público existente.
+- RRF e Graph disputarão o mesmo reranking.
+- Graph não sofrerá starvation sistemático.
+- Candidatos abaixo do `top_k` inicial poderão ser promovidos.
+- O fornecedor permanecerá desacoplado do pipeline e do `RerankingService`.
+- Testes poderão usar fake provider sem chamadas externas.
+- O contrato HTTP público será preservado.
 
 ## Consequências negativas
 
-- Introduz uma integração externa adicional.
-- Acrescenta custo e latência à busca híbrida.
-- Exige configuração ainda não definida.
-- Cria novos caminhos de falha operacional.
-- Exige testes de integração do adapter e da composição híbrida.
-- Exige decisão posterior sobre o orçamento entre RRF e Graph.
+- Uma integração externa adicional introduz custo e latência.
+- São necessários configuração, adapter e testes de integração.
+- Há novos caminhos de falha operacional.
+- Preço, limites e disponibilidade do fornecedor são externos e mutáveis.
+- O fator de overfetch, a proporção 80/20 e o cap de 100 precisarão de revisão
+  com dados de produção.
 
-## Decisões pendentes
+## Decisões futuras
 
-1. Fornecedor externo.
-2. Modelo.
-3. Endpoint.
-4. Credencial e variável de ambiente.
-5. Timeout e retry.
-6. Divisão exata entre RRF e Graph.
-7. Divisão fixa ou proporcional.
-8. Política HTTP para provider ausente ou indisponível.
-9. Confirmação de que 100 permanece como cap definitivo.
+1. Eventual migração de modelo.
+2. Política de circuit breaker.
+3. Métricas e alertas de custo.
+4. Revisão futura do fator de overfetch.
+5. Revisão futura da proporção 80/20.
+6. Confirmação futura do cap de 100 com dados de produção.
 
 ## Fluxo-alvo
 
@@ -163,10 +192,10 @@ forem definidos. Evita introduzir provider fictício ou constantes arbitrárias.
 POST /search/hybrid
 → lexical search
 → vector search
-→ RRF com horizonte interno
+→ RRF com horizonte interno H
 → Graph Expansion
 → merge e deduplicação
-→ pool consolidado de até 100
+→ pool consolidado de até H candidatos, limitado a 100
 → HybridRerankingPipeline
 → top_k público
 → resposta HTTP
@@ -174,11 +203,7 @@ POST /search/hybrid
 
 ## Critérios para liberar implementação
 
-A implementação só poderá começar após definição explícita de:
-
-1. fornecedor e modelo do provider;
-2. configuração necessária;
-3. orçamento exato de RRF;
-4. orçamento exato de Graph;
-5. regra de preenchimento;
-6. erro operacional para provider indisponível.
+A implementação pode iniciar uma fase própria após o design do adapter de
+Voyage AI, da injeção de dependência, da tradução de falhas operacionais e dos
+testes determinísticos que comprovem o orçamento, a deduplicação, o
+preenchimento e a ausência de chamadas externas na suíte.
