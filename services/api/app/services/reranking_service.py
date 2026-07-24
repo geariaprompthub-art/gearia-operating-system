@@ -1,6 +1,6 @@
 """Pure validation and deterministic ordering for provider-agnostic reranking."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from math import isfinite
 from uuid import UUID
 
@@ -10,10 +10,11 @@ from app.services.reranking_contracts import (
     RerankedCandidate,
     RerankingProvider,
 )
+from app.services.reranking_provider_errors import RerankingProviderResponseError
 
 
 class RerankingService:
-    """Validate complete reranking exchanges before returning any reordered result."""
+    """Validate complete reranking exchanges while preserving provider order."""
 
     MAX_CANDIDATES = 100
     _MATCHED_BY_ORDER = ("lexical", "vector", "graph")
@@ -25,36 +26,31 @@ class RerankingService:
     def rerank(self, query: str, candidates: Sequence[RerankCandidate]) -> list[RerankedCandidate]:
         """Score an unchanged candidate sequence once and return deterministic ordering."""
 
-        normalized_query = self._validate_query(query)
+        validated_query = self._validate_query(query)
         validated_candidates = self._validate_candidates(candidates)
         if not validated_candidates:
             return []
 
-        provider_results = self._provider.rerank(normalized_query, validated_candidates)
-        scores = self._validate_provider_results(provider_results, validated_candidates)
+        provider_results = self._provider.rerank(validated_query, validated_candidates)
+        validated_results = self._validate_provider_results(provider_results, validated_candidates)
+        candidates_by_id = {candidate.content_id: candidate for candidate in validated_candidates}
         return [
             RerankedCandidate(
-                content_id=candidate.content_id,
-                pre_rerank_rank=candidate.pre_rerank_rank,
-                matched_by=candidate.matched_by,
+                content_id=result.content_id,
+                rerank_score=result.score,
+                pre_rerank_rank=candidates_by_id[result.content_id].pre_rerank_rank,
+                matched_by=candidates_by_id[result.content_id].matched_by,
             )
-            for candidate in sorted(validated_candidates, key=lambda candidate: self._ordering_key(candidate, scores))
+            for result in validated_results
         ]
-
-    @staticmethod
-    def _ordering_key(candidate: RerankCandidate, scores: Mapping[UUID, float]) -> tuple[float, int, UUID]:
-        """Keep the UUID tie-break explicit even though valid ranks are unique."""
-
-        return (-scores[candidate.content_id], candidate.pre_rerank_rank, candidate.content_id)
 
     @staticmethod
     def _validate_query(query: str) -> str:
         if not isinstance(query, str):
             raise ValueError("query must be a non-blank string")
-        normalized_query = query.strip()
-        if not normalized_query:
+        if not query.strip():
             raise ValueError("query must be a non-blank string")
-        return normalized_query
+        return query
 
     @classmethod
     def _validate_candidates(cls, candidates: Sequence[RerankCandidate]) -> list[RerankCandidate]:
@@ -101,32 +97,55 @@ class RerankingService:
         cls,
         provider_results: Sequence[ProviderRerankResult],
         candidates: Sequence[RerankCandidate],
-    ) -> dict[UUID, float]:
-        values = cls._materialize(provider_results, "provider results")
+    ) -> list[ProviderRerankResult]:
+        try:
+            values = cls._materialize(provider_results, "provider results")
+        except ValueError as error:
+            raise RerankingProviderResponseError(
+                "Reranking provider returned an invalid response"
+            ) from error
         if len(values) != len(candidates):
-            raise ValueError("provider results must contain exactly one result per candidate")
+            raise RerankingProviderResponseError(
+                "Reranking provider returned an unexpected result count"
+            )
 
         expected_ids = {candidate.content_id for candidate in candidates}
-        scores: dict[UUID, float] = {}
+        seen_ids: set[UUID] = set()
+        validated: list[ProviderRerankResult] = []
         for result in values:
             if not isinstance(result, ProviderRerankResult):
-                raise ValueError("provider results must contain ProviderRerankResult values")
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned an invalid response"
+                )
             if not isinstance(result.content_id, UUID):
-                raise ValueError("provider result content_id must be a UUID")
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned an invalid content identifier"
+                )
             if result.content_id not in expected_ids:
-                raise ValueError("provider result references an unknown content_id")
-            if result.content_id in scores:
-                raise ValueError("provider results must not contain duplicate content_id values")
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned an unknown content identifier"
+                )
+            if result.content_id in seen_ids:
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned duplicate content identifiers"
+                )
             if type(result.score) not in (int, float):
-                raise ValueError("provider result score must be an integer or float")
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned an invalid score"
+                )
             score = float(result.score)
             if not isfinite(score):
-                raise ValueError("provider result score must be finite")
-            scores[result.content_id] = score
+                raise RerankingProviderResponseError(
+                    "Reranking provider returned an invalid score"
+                )
+            seen_ids.add(result.content_id)
+            validated.append(ProviderRerankResult(result.content_id, score))
 
-        if set(scores) != expected_ids:
-            raise ValueError("provider results must include every candidate content_id")
-        return scores
+        if seen_ids != expected_ids:
+            raise RerankingProviderResponseError(
+                "Reranking provider returned an unexpected result set"
+            )
+        return validated
 
     @staticmethod
     def _materialize(values: object, name: str) -> list[object]:

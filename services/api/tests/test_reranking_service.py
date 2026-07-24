@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.services.reranking_contracts import ProviderRerankResult, RerankCandidate, RerankedCandidate
+from app.services.reranking_provider_errors import RerankingProviderResponseError
 from app.services.reranking_service import RerankingService
 
 
@@ -53,7 +54,7 @@ def test_reranks_one_candidate_and_preserves_immutable_provenance() -> None:
 
     result = RerankingService(provider).rerank("query", [candidate])
 
-    assert result == [RerankedCandidate(candidate.content_id, candidate.pre_rerank_rank, candidate.matched_by)]
+    assert result == [RerankedCandidate(candidate.content_id, candidate.pre_rerank_rank, candidate.matched_by, 1.0)]
     assert provider.calls == [("query", [candidate])]
     with pytest.raises((AttributeError, TypeError)):
         result[0].pre_rerank_rank = 2  # type: ignore[misc]
@@ -63,40 +64,23 @@ def test_reranks_single_and_multiple_candidates_without_exposing_scores() -> Non
 
     result = RerankingService(provider).rerank("  query  ", [first, second, third])
 
-    assert [item.content_id for item in result] == [first.content_id, second.content_id, third.content_id]
-    assert [item.pre_rerank_rank for item in result] == [1, 2, 3]
-    assert [item.matched_by for item in result] == [first.matched_by, second.matched_by, third.matched_by]
-    assert provider.calls == [("query", [first, second, third])]
+    assert [item.content_id for item in result] == [third.content_id, first.content_id, second.content_id]
+    assert [item.pre_rerank_rank for item in result] == [3, 1, 2]
+    assert [item.matched_by for item in result] == [third.matched_by, first.matched_by, second.matched_by]
+    assert [item.rerank_score for item in result] == [0.2, 0.9, 0.7]
+    assert provider.calls == [("  query  ", [first, second, third])]
     assert all(not hasattr(item, "score") for item in result)
 
 
-def test_ties_use_input_rank_then_uuid_and_are_repeatable() -> None:
-    low_id, high_id = sorted((uuid4(), uuid4()), key=str)
-    first = _candidate(high_id, rank=1)
-    second = _candidate(low_id, rank=2)
-    provider = SpyProvider(_results(second, first, scores=[0.5, 0.5]))
-    service = RerankingService(provider)
+def test_provider_order_is_authoritative_even_when_scores_are_not_descending() -> None:
+    first = _candidate(rank=1)
+    second = _candidate(rank=2)
+    provider = SpyProvider(_results(second, first, scores=[0.1, 0.9]))
 
-    assert [item.content_id for item in service.rerank("query", [first, second])] == [first.content_id, second.content_id]
+    result = RerankingService(provider).rerank("query", [first, second])
 
-    tied_rank_first = _candidate(high_id, rank=1)
-    tied_rank_second = _candidate(low_id, rank=1)
-    with pytest.raises(ValueError, match="duplicate pre_rerank_rank"):
-        service.rerank("query", [tied_rank_first, tied_rank_second])
-
-    first = _candidate(high_id, rank=2)
-    second = _candidate(low_id, rank=1)
-    provider.results = _results(first, second, scores=[0.5, 0.5])
-    assert [item.content_id for item in service.rerank("query", [first, second])] == [second.content_id, first.content_id]
-
-def test_uuid_is_the_defensive_final_tie_breaker() -> None:
-    """Equal score/rank is invalid publicly but the internal key remains deterministic."""
-
-    low_id, high_id = sorted((uuid4(), uuid4()), key=str)
-    low = _candidate(low_id, rank=1)
-    high = _candidate(high_id, rank=1)
-    scores = {low_id: 0.5, high_id: 0.5}
-    assert RerankingService._ordering_key(low, scores) < RerankingService._ordering_key(high, scores)
+    assert [item.content_id for item in result] == [second.content_id, first.content_id]
+    assert [item.rerank_score for item in result] == [0.1, 0.9]
 
 
 def test_repeated_calls_are_deterministic_and_do_not_mutate_input() -> None:
@@ -174,7 +158,7 @@ def test_rejects_invalid_provider_responses_without_partial_output(provider_resu
     candidates = [_candidate(rank=1), _candidate(rank=2)]
     results = provider_results(candidates) if callable(provider_results) else provider_results
     provider = SpyProvider(results)
-    with pytest.raises(ValueError):
+    with pytest.raises(RerankingProviderResponseError):
         RerankingService(provider).rerank("query", candidates)
     assert len(provider.calls) == 1
 
@@ -189,7 +173,7 @@ def test_rejects_missing_extra_unknown_and_duplicate_provider_ids() -> None:
     ]
     for results in scenarios:
         provider = SpyProvider(results)
-        with pytest.raises(ValueError):
+        with pytest.raises(RerankingProviderResponseError):
             RerankingService(provider).rerank("query", [first, second])
         assert len(provider.calls) == 1
 

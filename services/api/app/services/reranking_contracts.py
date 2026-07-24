@@ -1,4 +1,4 @@
-"""Pure internal contracts for the future provider-agnostic reranking stage."""
+"""Pure internal contracts for the provider-agnostic reranking stage."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,11 +26,12 @@ class ProviderRerankResult:
 
 @dataclass(frozen=True, slots=True)
 class RerankedCandidate:
-    """Safe reranking output retaining only ordering metadata and provenance."""
+    """Validated provider ordering with internal score and immutable provenance."""
 
     content_id: UUID
     pre_rerank_rank: int
     matched_by: tuple[str, ...]
+    rerank_score: float
 
 
 class RerankingProvider(Protocol):
@@ -41,5 +42,4 @@ class RerankingProvider(Protocol):
         query: str,
         candidates: Sequence[RerankCandidate],
     ) -> Sequence[ProviderRerankResult]:
-        """Score every supplied candidate exactly once."""
-
+        """Return one result per candidate, covering all IDs in provider-defined order."""
