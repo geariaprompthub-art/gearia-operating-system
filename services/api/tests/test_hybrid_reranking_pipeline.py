@@ -16,7 +16,7 @@ from app.services.hybrid_reranking_pipeline import (
     HybridRerankingPipeline,
     RerankingPipelineHydrationError,
 )
-from app.services.pre_reranking_candidate_pool import ConsolidatedPoolCandidate
+from app.services.pre_reranking_candidate_pool import ConsolidatedPoolCandidate, PreRerankingCandidatePool
 from app.services.reciprocal_rank_fusion import FusedCandidate
 from app.services.rerank_document_formatter import RerankDocumentFormatter
 from app.services.reranking_contracts import ProviderRerankResult, RerankCandidate
@@ -124,6 +124,7 @@ def _pipeline(
     documents: list[RerankDocumentRecord],
     public: list[HydratedContent],
     eligible_ids: list[UUID] | None = None,
+    candidate_pool: type[PreRerankingCandidatePool] = PoolSpy,
 ) -> tuple[HybridRerankingPipeline, Eligibility, Documents, PublicHydration]:
     eligibility = Eligibility(eligible_ids)
     document_repository = Documents(documents)
@@ -135,7 +136,7 @@ def _pipeline(
             RerankDocumentFormatter(),
             RerankingService(provider),
             hydration,
-            PoolSpy,
+            candidate_pool,
         ),
         eligibility,
         document_repository,
@@ -143,7 +144,7 @@ def _pipeline(
     )
 
 
-def test_pipeline_uses_pool_once_sends_all_candidates_and_applies_top_k_last() -> None:
+def test_pipeline_uses_pool_once_sends_all_selected_candidates_and_applies_top_k_last() -> None:
     first, second, graph = uuid4(), uuid4(), uuid4()
     PoolSpy.reset(
         [
@@ -167,7 +168,7 @@ def test_pipeline_uses_pool_once_sends_all_candidates_and_applies_top_k_last() -
     rrf = [_rrf(first, ("lexical", "vector")), _rrf(second, ("vector",))]
     graphs = [_graph(graph)]
 
-    result = pipeline.run("  mixed query  ", rrf, graphs, top_k=2)
+    result = pipeline.run("  mixed query  ", rrf, graphs, top_k=2, candidate_limit=2)
 
     assert PoolSpy.calls == [(rrf, graphs, 2)]
     assert eligibility.calls == [[first, second, graph]]
@@ -190,6 +191,63 @@ def test_pipeline_uses_pool_once_sends_all_candidates_and_applies_top_k_last() -
     assert all("rerank_score" not in item for item in result["items"])
 
 
+def test_small_candidate_limit_bounds_pool_and_provider_independently_of_public_top_k() -> None:
+    """Eligible candidates beyond H never reach the provider, regardless of public top_k."""
+
+    rrf_ids = [uuid4() for _ in range(30)]
+    graph_ids = [uuid4() for _ in range(30)]
+    rrf = [_rrf(content_id) for content_id in rrf_ids]
+    graphs = [_graph(content_id) for content_id in graph_ids]
+    selected = PreRerankingCandidatePool.build(rrf, graphs, top_k=1)
+    selected_ids = [candidate.content_id for candidate in selected]
+
+    assert PreRerankingCandidatePool.horizon(1) == 20
+    assert len(rrf) + len(graphs) > len(selected_ids) == 20
+
+    providers: list[Provider] = []
+    for public_top_k in (1, 10):
+        provider = Provider(
+            [ProviderRerankResult(content_id, float(20 - index)) for index, content_id in enumerate(selected_ids)]
+        )
+        providers.append(provider)
+        pipeline, eligibility, documents, _ = _pipeline(
+            provider,
+            [_document(content_id) for content_id in selected_ids],
+            [_public(content_id) for content_id in selected_ids[:public_top_k]],
+            candidate_pool=PreRerankingCandidatePool,
+        )
+
+        result = pipeline.run(
+            "query",
+            rrf,
+            graphs,
+            top_k=public_top_k,
+            candidate_limit=1,
+        )
+
+        assert eligibility.calls == [selected_ids]
+        assert documents.calls == [selected_ids]
+        assert [candidate.content_id for candidate in provider.calls[0][1]] == selected_ids
+        assert len(provider.calls[0][1]) == PreRerankingCandidatePool.horizon(1)
+        assert result["total"] == public_top_k
+
+    assert [len(provider.calls[0][1]) for provider in providers] == [20, 20]
+
+
+def test_pipeline_requires_an_explicit_provider_safe_candidate_limit() -> None:
+    """Public top_k cannot silently become the pre-reranking horizon."""
+
+    content_id = uuid4()
+    provider = Provider([ProviderRerankResult(content_id, 1.0)])
+    pipeline, _, _, _ = _pipeline(provider, [_document(content_id)], [_public(content_id)])
+    PoolSpy.reset([_pool_candidate(content_id)])
+
+    with pytest.raises(TypeError):
+        pipeline.run("query", [_rrf(content_id)], [], top_k=1)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="candidate_limit"):
+        pipeline.run("query", [_rrf(content_id)], [], top_k=1, candidate_limit=101)
+
+
 def test_pipeline_reconciles_equal_document_text_by_content_id_and_provider_order() -> None:
     first, second = uuid4(), uuid4()
     PoolSpy.reset([_pool_candidate(first), _pool_candidate(second, ("graph",))])
@@ -200,7 +258,7 @@ def test_pipeline_reconciles_equal_document_text_by_content_id_and_provider_orde
         [_public(second), _public(first)],
     )
 
-    result = pipeline.run("query", [_rrf(first)], [_graph(second)], top_k=2)
+    result = pipeline.run("query", [_rrf(first)], [_graph(second)], top_k=2, candidate_limit=2)
 
     assert hydration.calls == [[second, first]]
     assert [item["content_id"] for item in result["items"]] == [second, first]
@@ -225,7 +283,7 @@ def test_invalid_provider_exchange_fails_closed_without_public_hydration(results
     pipeline, _, _, hydration = _pipeline(provider, [_document(first), _document(second)], [_public(first), _public(second)])
 
     with pytest.raises(RerankingProviderResponseError):
-        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2)
+        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2, candidate_limit=2)
 
     assert len(provider.calls) == 1
     assert hydration.calls == []
@@ -247,7 +305,7 @@ def test_provider_errors_propagate_once_without_fallback(error: Exception) -> No
     pipeline, _, _, hydration = _pipeline(provider, [_document(content_id)], [_public(content_id)])
 
     with pytest.raises(type(error)):
-        pipeline.run("query", [_rrf(content_id)], [], top_k=1)
+        pipeline.run("query", [_rrf(content_id)], [], top_k=1, candidate_limit=1)
 
     assert len(provider.calls) == 1
     assert hydration.calls == []
@@ -258,7 +316,7 @@ def test_empty_pool_skips_provider_and_all_hydration() -> None:
     provider = Provider()
     pipeline, eligibility, documents, hydration = _pipeline(provider, [], [])
 
-    assert pipeline.run("query", [], [], top_k=1) == {"items": [], "total": 0}
+    assert pipeline.run("query", [], [], top_k=1, candidate_limit=1) == {"items": [], "total": 0}
     assert eligibility.calls == [[]]
     assert documents.calls == []
     assert provider.calls == []
@@ -271,7 +329,7 @@ def test_no_eligible_candidates_skip_provider_after_pool_selection() -> None:
     provider = Provider()
     pipeline, eligibility, documents, hydration = _pipeline(provider, [_document(content_id)], [_public(content_id)], [])
 
-    assert pipeline.run("query", [_rrf(content_id)], [], top_k=1) == {"items": [], "total": 0}
+    assert pipeline.run("query", [_rrf(content_id)], [], top_k=1, candidate_limit=1) == {"items": [], "total": 0}
     assert eligibility.calls == [[content_id]]
     assert documents.calls == provider.calls == hydration.calls == []
 
@@ -287,7 +345,7 @@ def test_missing_document_hydration_fails_closed_before_provider() -> None:
     )
 
     with pytest.raises(RerankingPipelineHydrationError):
-        pipeline.run("query", [_rrf(first)], [_graph(missing), _graph(last)], top_k=3)
+        pipeline.run("query", [_rrf(first)], [_graph(missing), _graph(last)], top_k=3, candidate_limit=3)
 
     assert documents.calls == [[first, missing, last]]
     assert provider.calls == []
@@ -316,7 +374,7 @@ def test_invalid_document_hydration_never_sends_a_subset_to_provider(
     pipeline, _, documents, hydration = _pipeline(provider, records, [_public(first), _public(second)])
 
     with pytest.raises(RerankingPipelineHydrationError):
-        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2)
+        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2, candidate_limit=2)
 
     assert documents.calls == [[first, second]]
     assert provider.calls == []
@@ -349,7 +407,7 @@ def test_invalid_public_hydration_fails_closed_without_reordering_or_backfill(
     )
 
     with pytest.raises(RerankingPipelineHydrationError):
-        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2)
+        pipeline.run("query", [_rrf(first), _rrf(second)], [], top_k=2, candidate_limit=2)
 
     assert len(provider.calls) == 1
     assert hydration.calls == [[second, first]]
@@ -363,7 +421,7 @@ def test_pool_receives_distinct_rrf_and_graph_sequences_without_local_deduplicat
     rrf = [_rrf(shared, ("lexical", "vector"))]
     graphs = [_graph(shared), _graph(graph_only)]
 
-    pipeline.run("query", rrf, graphs, top_k=2)
+    pipeline.run("query", rrf, graphs, top_k=2, candidate_limit=2)
 
     assert PoolSpy.calls == [(rrf, graphs, 2)]
     assert [candidate.content_id for candidate in provider.calls[0][1]] == [shared, graph_only]

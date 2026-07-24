@@ -9,12 +9,18 @@ from app.repositories.content_eligibility_repository import ContentEligibilityRe
 from app.repositories.content_hydration_repository import ContentHydrationRepository
 from app.repositories.content_relationship_repository import ContentRelationshipRepository
 from app.repositories.lexical_search_repository import LexicalSearchRepository
+from app.repositories.rerank_document_repository import RerankDocumentRepository
 from app.repositories.vector_search_repository import VectorSearchRepository
 from app.services.embedding_dependencies import get_embedding_provider
 from app.services.graph_candidate_aggregator import GraphCandidateAggregator
 from app.services.graph_expansion_service import GraphExpansionService
 from app.services.hybrid_search_service import HybridSearchService, HybridSearchSettings
+from app.services.hybrid_reranking_pipeline import HybridRerankingPipeline
+from app.services.pre_reranking_candidate_pool import PreRerankingCandidatePool
+from app.services.rerank_document_formatter import RerankDocumentFormatter
+from app.services.reranking_service import RerankingService
 from app.services.vector_candidate_service import VectorCandidateService
+from app.services.voyage_reranking_provider import VoyageRerankingProvider
 
 
 def get_hybrid_search_service(
@@ -31,12 +37,24 @@ def get_hybrid_search_service(
         max_seeds=20,
         candidate_limit=100,
     )
+    reranking_provider = VoyageRerankingProvider(
+        api_key=settings.voyage_api_key,
+        model=settings.voyage_rerank_model,
+        timeout_seconds=settings.voyage_rerank_timeout_seconds,
+    )
+    reranking_pipeline = HybridRerankingPipeline(
+        eligibility_repository=ContentEligibilityRepository(database),
+        rerank_document_repository=RerankDocumentRepository(database),
+        formatter=RerankDocumentFormatter(),
+        reranking_service=RerankingService(reranking_provider),
+        hydration_repository=ContentHydrationRepository(database),
+        candidate_pool=PreRerankingCandidatePool,
+    )
     return HybridSearchService(
         lexical_repository=LexicalSearchRepository(database),
         vector_candidates=VectorCandidateService(vector_repository, provider),  # type: ignore[arg-type]
-        hydration_repository=ContentHydrationRepository(database),
         graph_expansion_service=graph_expansion_service,
-        eligibility_repository=ContentEligibilityRepository(database),
+        reranking_pipeline=reranking_pipeline,
         settings=HybridSearchSettings(
             lexical_candidate_k=settings.hybrid_lexical_candidate_k,
             vector_candidate_k=settings.hybrid_vector_candidate_k,

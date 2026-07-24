@@ -11,7 +11,13 @@ from app.schemas.search import SearchResponse, SearchSortBy, SortOrder
 from app.schemas.hybrid_search import HybridSearchRequest, HybridSearchResponse
 from app.schemas.vector_search import VectorSearchRequest, VectorSearchResponse
 from app.services.hybrid_search_dependencies import get_hybrid_search_service
+from app.services.hybrid_reranking_pipeline import RerankingPipelineHydrationError
 from app.services.hybrid_search_service import HybridSearchService
+from app.services.reranking_provider_errors import (
+    RerankingProviderConfigurationError,
+    RerankingProviderResponseError,
+    RerankingProviderUnavailableError,
+)
 from app.services.search_service import SearchService
 from app.services.vector_search_dependencies import get_vector_search_service
 from app.services.vector_search_service import VectorSearchService
@@ -101,6 +107,13 @@ def search_hybrid(
 
     try:
         return service.search(request.query, request.top_k)
+    except (
+        RerankingProviderConfigurationError,
+        RerankingProviderUnavailableError,
+        RerankingProviderResponseError,
+        RerankingPipelineHydrationError,
+    ):
+        raise
     except RuntimeError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Hybrid retrieval unavailable") from error
     except Exception as error:

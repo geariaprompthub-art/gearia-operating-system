@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     hybrid_lexical_candidate_k: int = Field(default=50, ge=1, le=500)
     hybrid_vector_candidate_k: int = Field(default=50, ge=1, le=500)
     hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
+    voyage_api_key: str | None = None
+    voyage_rerank_model: str = "rerank-2.5"
+    voyage_rerank_timeout_seconds: float = Field(default=10.0, gt=0)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

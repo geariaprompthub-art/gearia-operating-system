@@ -43,10 +43,12 @@ class HybridRerankingPipeline:
         rrf_candidates: Sequence[FusedCandidate],
         graph_candidates: Sequence[GraphExpandedCandidate],
         top_k: int,
+        candidate_limit: int,
     ) -> dict[str, object]:
-        """Rerank the ADR-approved consolidated pool without any fallback."""
+        """O provider recebe todos os candidatos elegíveis selecionados pelo PreRerankingCandidatePool, limitados pelo horizonte H."""
 
-        candidates = self._candidate_pool.build(rrf_candidates, graph_candidates, top_k)
+        self._validate_candidate_limit(candidate_limit)
+        candidates = self._candidate_pool.build(rrf_candidates, graph_candidates, candidate_limit)
         eligible_ids = self._eligibility.filter_eligible([candidate.content_id for candidate in candidates])
         if not eligible_ids:
             return {"items": [], "total": 0}
@@ -78,6 +80,15 @@ class HybridRerankingPipeline:
             for rank, content in enumerate(ordered_contents, 1)
         ]
         return {"items": items, "total": len(items)}
+
+    @staticmethod
+    def _validate_candidate_limit(candidate_limit: int) -> None:
+        """Reject ambiguous or provider-unsafe pre-reranking limits."""
+
+        if type(candidate_limit) is not int or not 0 < candidate_limit <= RerankingService.MAX_CANDIDATES:
+            raise ValueError(
+                f"candidate_limit must be an integer between 1 and {RerankingService.MAX_CANDIDATES}"
+            )
 
     @staticmethod
     def _validate_document_hydration(
