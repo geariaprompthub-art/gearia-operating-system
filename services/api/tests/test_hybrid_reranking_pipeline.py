@@ -26,6 +26,7 @@ from app.services.reranking_provider_errors import (
     RerankingProviderUnavailableError,
 )
 from app.services.reranking_service import RerankingService
+from app.services.hybrid_search_telemetry import HybridSearchStage
 
 
 class Eligibility:
@@ -77,6 +78,28 @@ class Provider:
         return list(self.results)
 
 
+class SpyHybridSearchTelemetry:
+    """Captures pipeline telemetry without coupling tests to Prometheus."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str, int | None, int | None]] = []
+
+    def record_request_started(self) -> None:
+        return None
+
+    def record_request_completed(self, duration_seconds: float, final_item_count: int, status: str) -> None:
+        return None
+
+    def record_stage_completed(self, stage: str, duration_seconds: float, *, input_count: int | None = None, output_count: int | None = None) -> None:
+        self.events.append(("stage", stage, "success", input_count, output_count))
+
+    def record_stage_failed(self, stage: str, duration_seconds: float, error_type: str) -> None:
+        self.events.append(("stage", stage, "error", None, None))
+
+    def record_provider_call(self, duration_seconds: float, *, input_count: int, output_count: int, status: str) -> None:
+        self.events.append(("provider", HybridSearchStage.PROVIDER_RERANKING, status, input_count, output_count))
+
+
 class PoolSpy:
     configured: list[ConsolidatedPoolCandidate] = []
     calls: list[tuple[list[FusedCandidate], list[GraphExpandedCandidate], int]] = []
@@ -125,6 +148,7 @@ def _pipeline(
     public: list[HydratedContent],
     eligible_ids: list[UUID] | None = None,
     candidate_pool: type[PreRerankingCandidatePool] = PoolSpy,
+    telemetry: SpyHybridSearchTelemetry | None = None,
 ) -> tuple[HybridRerankingPipeline, Eligibility, Documents, PublicHydration]:
     eligibility = Eligibility(eligible_ids)
     document_repository = Documents(documents)
@@ -137,11 +161,81 @@ def _pipeline(
             RerankingService(provider),
             hydration,
             candidate_pool,
+            telemetry=telemetry or SpyHybridSearchTelemetry(),
         ),
         eligibility,
         document_repository,
         hydration,
     )
+
+
+def test_pipeline_emits_nominal_stage_counts_and_one_real_provider_call() -> None:
+    first, second = uuid4(), uuid4()
+    PoolSpy.reset([_pool_candidate(first), _pool_candidate(second, ("graph",))])
+    provider = Provider([ProviderRerankResult(second, 0.8), ProviderRerankResult(first, 0.3)])
+    telemetry = SpyHybridSearchTelemetry()
+    pipeline, _, documents, hydration = _pipeline(
+        provider,
+        [_document(first), _document(second)],
+        [_public(second)],
+        telemetry=telemetry,
+    )
+
+    assert pipeline.run("query", [_rrf(first)], [_graph(second)], top_k=1, candidate_limit=2)["total"] == 1
+    assert documents.calls == [[first, second]]
+    assert hydration.calls == [[second]]
+    assert len(provider.calls) == 1
+    assert telemetry.events == [
+        ("stage", HybridSearchStage.CANDIDATE_POOL, "success", 2, 2),
+        ("stage", HybridSearchStage.ELIGIBILITY, "success", 2, 2),
+        ("stage", HybridSearchStage.RERANKING_HYDRATION, "success", 2, 2),
+        ("stage", HybridSearchStage.DOCUMENT_FORMATTING, "success", 2, 2),
+        ("provider", HybridSearchStage.PROVIDER_RERANKING, "success", 2, 2),
+        ("stage", HybridSearchStage.PROVIDER_RERANKING, "success", 2, 2),
+        ("stage", HybridSearchStage.FINAL_TOP_K, "success", 2, 1),
+        ("stage", HybridSearchStage.PUBLIC_HYDRATION, "success", 1, 1),
+        ("stage", HybridSearchStage.RESPONSE_BUILDING, "success", 1, 1),
+    ]
+
+
+def test_provider_failure_emits_one_error_call_and_stops_before_top_k() -> None:
+    content_id = uuid4()
+    PoolSpy.reset([_pool_candidate(content_id)])
+    telemetry = SpyHybridSearchTelemetry()
+    provider = Provider(error=RerankingProviderUnavailableError("provider unavailable"))
+    pipeline, _, documents, hydration = _pipeline(
+        provider, [_document(content_id)], [_public(content_id)], telemetry=telemetry
+    )
+
+    with pytest.raises(RerankingProviderUnavailableError):
+        pipeline.run("query", [_rrf(content_id)], [], top_k=1, candidate_limit=1)
+
+    assert len(provider.calls) == 1
+    assert documents.calls == [[content_id]]
+    assert hydration.calls == []
+    assert telemetry.events[-2:] == [
+        ("provider", HybridSearchStage.PROVIDER_RERANKING, "error", 1, 0),
+        ("stage", HybridSearchStage.PROVIDER_RERANKING, "error", None, None),
+    ]
+    assert all(stage not in {HybridSearchStage.FINAL_TOP_K, HybridSearchStage.PUBLIC_HYDRATION} for _, stage, _, _, _ in telemetry.events)
+
+
+def test_no_eligible_candidates_has_no_provider_call_telemetry() -> None:
+    content_id = uuid4()
+    PoolSpy.reset([_pool_candidate(content_id)])
+    telemetry = SpyHybridSearchTelemetry()
+    provider = Provider()
+    pipeline, eligibility, documents, hydration = _pipeline(
+        provider, [_document(content_id)], [_public(content_id)], [], telemetry=telemetry
+    )
+
+    assert pipeline.run("query", [_rrf(content_id)], [], top_k=1, candidate_limit=1) == {"items": [], "total": 0}
+    assert eligibility.calls == [[content_id]]
+    assert documents.calls == provider.calls == hydration.calls == []
+    assert telemetry.events == [
+        ("stage", HybridSearchStage.CANDIDATE_POOL, "success", 1, 1),
+        ("stage", HybridSearchStage.ELIGIBILITY, "success", 1, 0),
+    ]
 
 
 def test_pipeline_uses_pool_once_sends_all_selected_candidates_and_applies_top_k_last() -> None:

@@ -4,7 +4,11 @@ import pytest
 
 from app.core.config import Settings
 from app.services.fake_embedding_provider import FakeEmbeddingProvider
-from app.services.hybrid_search_dependencies import get_hybrid_search_service
+from app.services.hybrid_search_dependencies import (
+    get_hybrid_search_service,
+    get_hybrid_search_telemetry,
+)
+from app.services.hybrid_search_telemetry import NoOpHybridSearchTelemetry
 from app.services.reranking_provider_errors import RerankingProviderConfigurationError
 from app.services.voyage_reranking_provider import VoyageRerankingProvider
 from test_main import TestingSessionLocal
@@ -50,3 +54,45 @@ def test_hybrid_factory_propagates_missing_reranking_configuration(monkeypatch) 
             get_hybrid_search_service(database=database, provider=FakeEmbeddingProvider())
     finally:
         database.close()
+
+
+def test_telemetry_dependency_selects_noop_without_creating_a_prometheus_adapter(monkeypatch) -> None:
+    """Disabled observation remains a pure composition-root choice."""
+
+    get_hybrid_search_telemetry.cache_clear()
+    monkeypatch.setattr(
+        "app.services.hybrid_search_dependencies.get_settings",
+        lambda: Settings(hybrid_search_telemetry_enabled=False),
+    )
+    monkeypatch.setattr(
+        "app.services.hybrid_search_dependencies.PrometheusHybridSearchTelemetry",
+        lambda: pytest.fail("Prometheus adapter must not be created when disabled"),
+    )
+    try:
+        assert isinstance(get_hybrid_search_telemetry(), NoOpHybridSearchTelemetry)
+    finally:
+        get_hybrid_search_telemetry.cache_clear()
+
+
+def test_telemetry_dependency_is_application_scoped_when_enabled(monkeypatch) -> None:
+    """A repeated dependency resolution reuses one collector-owning adapter."""
+
+    created: list[object] = []
+
+    class Adapter:
+        pass
+
+    get_hybrid_search_telemetry.cache_clear()
+    monkeypatch.setattr(
+        "app.services.hybrid_search_dependencies.get_settings",
+        lambda: Settings(hybrid_search_telemetry_enabled=True),
+    )
+    monkeypatch.setattr(
+        "app.services.hybrid_search_dependencies.PrometheusHybridSearchTelemetry",
+        lambda: created.append(Adapter()) or created[-1],
+    )
+    try:
+        assert get_hybrid_search_telemetry() is get_hybrid_search_telemetry()
+        assert len(created) == 1
+    finally:
+        get_hybrid_search_telemetry.cache_clear()
