@@ -11,8 +11,10 @@ import feedparser
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.content import Content
 from app.models.source import Source
+from app.services.safe_rss_fetcher import SafeRSSFetchError, SafeRSSFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ class ScoutService:
 
     def __init__(self, database: Session) -> None:
         self._database = database
+        self._fetcher = SafeRSSFetcher(get_settings())
 
     def run(self) -> tuple[int, int]:
         """Ingest all enabled RSS sources with a configured URL."""
@@ -30,12 +33,18 @@ class ScoutService:
             Source.enabled.is_(True), Source.type == "rss", Source.url.is_not(None)
         )
         sources = list(self._database.scalars(statement))
-        created_count = 0
-
-        for source in sources:
-            created_count += self._ingest_source(source)
-
         self._database.commit()
+        created_count = 0
+        for source in sources:
+            try:
+                created_count += self._ingest_source(source)
+                self._database.commit()
+            except SafeRSSFetchError:
+                self._database.rollback()
+                logger.warning("RSS source fetch was rejected or unavailable", extra={"source_id": str(source.id)})
+            except Exception:
+                self._database.rollback()
+                logger.exception("RSS source ingestion failed", extra={"source_id": str(source.id)})
         return len(sources), created_count
 
     def _ingest_source(self, source: Source) -> int:
@@ -45,11 +54,11 @@ class ScoutService:
             return 0
 
         logger.info("Fetching RSS source %s", source.id)
-        parsed_feed = feedparser.parse(source.url)
+        parsed_feed = feedparser.parse(self._fetcher.fetch(source.url))
         feed_language = parsed_feed.get("feed", {}).get("language")
         created_count = 0
 
-        for entry in parsed_feed.get("entries", []):
+        for entry in parsed_feed.get("entries", [])[: get_settings().scout_max_entries_per_feed]:
             content = self._normalize_entry(source, entry, feed_language)
             exists = self._database.scalar(
                 select(Content.id).where(Content.fingerprint == content.fingerprint)

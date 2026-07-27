@@ -2,12 +2,19 @@ services:
   api:
     build:
       context: ./services/api
+      target: runtime
     env_file:
       - .env
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-false}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gearia}:${POSTGRES_PASSWORD:-gearia}@postgres:5432/${POSTGRES_DB:-gearia}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-["localhost","127.0.0.1","test","testserver"]}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
     ports:
       - "8000:8000"
     depends_on:
@@ -15,14 +22,59 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - gearia_internal
+
+  api-test:
+    build:
+      context: ./services/api
+      target: test
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gearia}:${POSTGRES_PASSWORD:-gearia}@postgres:5432/${POSTGRES_DB:-gearia}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - gearia_internal
 
   web:
     build:
       context: ./apps/web
+      target: runtime
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     depends_on:
       - api
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - gearia_internal
+
+  web-test:
+    build:
+      context: ./apps/web
+      target: test
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    profiles: ["tools"]
+    networks:
+      - gearia_internal
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -30,8 +82,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-gearia}
       POSTGRES_USER: ${POSTGRES_USER:-gearia}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gearia}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -39,11 +89,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - gearia_internal
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -51,7 +104,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - gearia_internal
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  gearia_internal:
+    driver: bridge

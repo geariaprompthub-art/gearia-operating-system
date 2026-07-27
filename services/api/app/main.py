@@ -2,11 +2,15 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_structured_logger
+from app.core import health
 from app.middleware.request_correlation import install_request_correlation
+from app.middleware.security_headers import install_security_headers
 from app.core.structured_logging import SafeStructuredLogger
 from app.routers.contents import router as contents_router
 from app.routers.enrichment import router as enrichment_router
@@ -73,12 +77,27 @@ async def handle_reranking_hydration_error(
 def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> FastAPI:
     """Compose an isolated FastAPI application with the production defaults."""
 
-    application = FastAPI(title=settings.app_name, lifespan=lifespan)
+    application = FastAPI(
+        title=settings.app_name,
+        lifespan=lifespan,
+        docs_url="/docs" if settings.docs_enabled else None,
+        redoc_url="/redoc" if settings.docs_enabled else None,
+        debug=settings.debug,
+    )
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=settings.cors_allow_credentials,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    )
     if settings.structured_logging_enabled:
         install_request_correlation(
             application,
             structured_logger or get_structured_logger("gearia.http"),
         )
+    install_security_headers(application)
 
     application.add_exception_handler(
         RerankingProviderConfigurationError,
@@ -107,6 +126,25 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
     @application.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get("/health/live", tags=["health"])
+    async def health_live() -> dict[str, str]:
+        """Report process liveness without touching infrastructure dependencies."""
+
+        return {"status": "alive"}
+
+    @application.get("/health/ready", tags=["health"])
+    async def health_ready() -> JSONResponse:
+        """Report readiness based solely on mandatory local dependencies."""
+
+        dependencies = {"postgres": "ok" if health.check_postgres(settings) else "unavailable"}
+        if settings.redis_required:
+            dependencies["redis"] = "ok" if health.check_redis(settings) else "unavailable"
+        ready = all(value == "ok" for value in dependencies.values())
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"status": "ready" if ready else "not_ready", "dependencies": dependencies},
+        )
 
     return application
 

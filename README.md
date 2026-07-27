@@ -1,113 +1,34 @@
 # GearIA Operating System
 
-## Sprints 06 e 07
+Plataforma de conteúdo com FastAPI, PostgreSQL/pgvector, Redis e Next.js. O repositório preserva ingestão RSS, enriquecimento determinístico, busca lexical, vetorial, híbrida e reranking. A P0 endurece a operação sem introduzir login, billing ou novos providers.
 
-Esta sprint acrescenta a tabela `content_relationships` e o algoritmo versionado
-`deterministic-v1`. Cada par é armazenado uma única vez, em ordem canônica de UUID,
-sem autorrelações. Relações incidentes que deixam de qualificar em um rebuild são
-removidas; um rebuild futuro do outro conteúdo pode recriá-las.
+## Serviços e arquitetura
 
-O algoritmo compara conteúdo já enriquecido (`processing_status=processed`) usando
-normalização sem diferença de caixa ou acentos. A pontuação máxima é 100: tópicos
-(35), keywords (25), categoria (15), similaridade textual (15), proximidade de
-publicação (5) e mesma fonte (5). Somente scores a partir de 20 são persistidos.
-Há no máximo 500 candidatos avaliados e 50 relações mantidas por conteúdo.
+- `services/api`: FastAPI, SQLAlchemy, Alembic, PostgreSQL e Redis.
+- `apps/web`: console operacional Next.js 15.
+- `postgres`: dados persistentes e extensões `vector`, `unaccent`, `pg_trgm`.
+- `redis`: dependência interna de readiness.
 
-Em PostgreSQL, a similaridade de `title + summary` usa `pg_trgm`/`similarity()`;
-SQLite usa apenas um fallback determinístico da biblioteca padrão para os testes.
-As relações permanecem determinísticas. A Sprint 07 acrescenta a fundação de
-embeddings com pgvector e geração controlada por provider; ela não implementa
-retrieval, RAG, IA externa em testes, Neo4j ou recomendações personalizadas.
-O contrato completo da Sprint 07 está em `docs/sprint-07-embedding-foundation.md`.
-O contrato da busca vetorial exata da Sprint 08 está em `docs/sprint-08-vector-retrieval.md`.
+O Compose é destinado a desenvolvimento/local ou single-host. PostgreSQL e Redis não publicam portas por padrão.
 
-Principais endpoints:
+## Início rápido
 
-- `POST /relationships/contents/{content_id}/rebuild?dry_run=false`
-- `POST /relationships/rebuild` (body com filtros e `limit`, padrão 100, máximo 500)
-- `GET /contents/{content_id}/related`
-- `GET /contents/{content_id}/recommendations`
-- `GET /relationships/between/{content_id}/{related_content_id}`
+1. Copie `.env.example` para `.env` e substitua os placeholders locais.
+2. Execute `docker compose up --build -d`.
+3. Abra `http://localhost:3000`, `http://localhost:8000/health/live` e, em desenvolvimento, `http://localhost:8000/docs`.
 
-`related` expõe todas as relações persistidas com filtros e paginação. Já
-`recommendations` reutiliza essas mesmas relações com score mínimo 20 e página menor;
-não representa personalização por usuário. `dry_run=true` calcula e relata criações,
-atualizações e remoções sem alterar linhas ou timestamps.
+Comandos operacionais: `make up`, `make test`, `make lint`, `make typecheck`, `make migrate`, `make logs` e `make smoke`. Use `docker compose down` para parar; não remova volumes para operação normal.
 
-Para aplicar ou conferir migrations no container:
+## Configuração e segurança
 
-```bash
-docker compose up --build
-docker compose exec api alembic current
-docker compose exec api alembic upgrade head
-```
+Configuração é centralizada em `services/api/app/core/config.py`. Produção rejeita debug, hosts wildcard, CORS inseguro com credenciais e credenciais locais padrão. Configure `DOCS_ENABLED=false` para ocultar OpenAPI em produção. Não versione `.env` ou chaves de provider.
 
-Para executar a suíte de testes:
+O backend oferece `GET /health` (compatibilidade), `/health/live` (processo) e `/health/ready` (PostgreSQL/Redis). Endpoints de busca e embeddings recebem `Cache-Control: no-store`; request IDs são retornados em toda resposta.
 
-```bash
-docker compose run --rm --no-deps api pytest -q
-```
+O Scout aceita apenas URLs HTTP(S) públicas, limita redirects, timeout, tamanho e itens por feed. Não configure fontes internas ou privadas.
 
-Fundação do monorepo da plataforma de inteligência artificial GearIA.
+## Qualidade e migrations
 
-## Estrutura
+Execute testes pelo contêiner: `docker compose --profile tools run --rm --no-deps api-test pytest -q`. Para migration: `docker compose exec api alembic upgrade head`. O CI valida compilação Python, migrations, testes, lockfile, typecheck e build web sem chaves externas.
 
-```text
-apps/web/          Frontend Next.js 15 + TypeScript
-services/api/      API FastAPI + SQLAlchemy 2.x + Alembic
-packages/          Pacotes compartilhados (reservado)
-infrastructure/    Configurações de infraestrutura (reservado)
-docs/              Documentação (reservado)
-tests/             Testes de integração e ponta a ponta (reservado)
-```
-
-## Pré-requisitos
-
-- Docker Desktop com Docker Compose v2
-
-## Como iniciar
-
-1. Opcionalmente, copie `.env.example` para `.env` e ajuste as credenciais locais.
-2. Na raiz do projeto, execute:
-
-   ```bash
-   docker compose up
-   ```
-
-Serviços disponíveis:
-
-- Frontend: http://localhost:3000
-- API: http://localhost:8000/health
-- PostgreSQL: `localhost:5432`
-- Redis: `localhost:6379`
-
-Para encerrar, execute `docker compose down`. Para também remover os dados locais, use `docker compose down --volumes`.
-
-## Backend
-
-O backend recebe `DATABASE_URL`, `REDIS_URL` e `LOG_LEVEL` por variáveis de ambiente, possui logs básicos e expõe `GET /health`, que responde `{"status":"ok"}`. As migrações Alembic ficam em `services/api/migrations`.
-
-Esta etapa contém apenas a fundação técnica; não inclui regras de negócio, autenticação ou agentes.
-
-## Busca textual
-
-`GET /search` consulta conteúdos indexados pelo PostgreSQL Full-Text Search. O índice `GIN` é mantido por trigger usando `unaccent` e a configuração `simple`, por isso a busca não diferencia maiúsculas/minúsculas ou acentos. O vetor pondera título (A), keywords e topics (B), resumo (C) e categoria (D).
-
-Exemplos:
-
-```text
-GET /search?q=chatgpt
-GET /search?q=automacao&category=inteligencia_artificial
-GET /search?processing_status=processed&min_relevance_score=70
-GET /search?page=2&page_size=20
-GET /search?q=prompt&sort_by=rank&sort_order=desc
-```
-
-Além de `q`, a busca aceita filtros de fonte, categoria, tópico, idioma, status, relevância e intervalo de publicação. A resposta inclui paginação (`page`, `page_size`, `total`, `total_pages`) e `search_rank`; sem `q`, o rank é `null` e a ordenação padrão é por criação decrescente.
-
-Após atualizar o projeto, aplique a migration e execute os testes:
-
-```bash
-docker compose exec api alembic upgrade head
-docker compose exec api pytest
-```
+Consulte [P0](docs/productization/SPRINT-P0.md) e a [Feature Matrix](docs/productization/FEATURE-MATRIX.md) para escopo, evidências e pendências.

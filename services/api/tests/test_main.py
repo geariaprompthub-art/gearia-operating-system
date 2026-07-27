@@ -125,6 +125,9 @@ def test_scout_run_persists_rss_content_without_duplicates(monkeypatch: object) 
         }
 
     monkeypatch.setattr("app.services.scout.feedparser.parse", fake_parse)
+    monkeypatch.setattr(
+        "app.services.scout.SafeRSSFetcher.fetch", lambda _self, _url: b"<rss></rss>"
+    )
 
     first_run = client.post("/scout/run")
     second_run = client.post("/scout/run")

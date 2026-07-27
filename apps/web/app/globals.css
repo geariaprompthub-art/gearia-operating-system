@@ -1,5 +1,24 @@
 :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; }
 * { box-sizing: border-box; }
-body { margin: 0; background: #101114; color: #f7f7f8; }
-main { display: grid; min-height: 100vh; place-items: center; padding: 2rem; }
-h1 { font-size: clamp(2rem, 6vw, 4rem); text-align: center; }
+body { margin: 0; background: #0a1020; color: #eef3ff; }
+a { color: inherit; }
+.site-header { align-items: center; border-bottom: 1px solid #23304a; display: flex; justify-content: space-between; padding: 1rem clamp(1.25rem, 5vw, 5rem); }
+.brand { color: #ffffff; font-size: 1.2rem; font-weight: 800; text-decoration: none; }
+.brand span, .eyebrow { color: #47d7ac; }
+nav { display: flex; gap: 1rem; }
+nav a { color: #b9c6dc; font-size: .9rem; text-decoration: none; }
+.page-shell { margin: 0 auto; max-width: 1100px; min-height: calc(100vh - 65px); padding: clamp(3rem, 8vw, 7rem) clamp(1.25rem, 5vw, 5rem); }
+.hero { max-width: 760px; }
+.eyebrow { font-size: .78rem; font-weight: 700; letter-spacing: .16em; }
+h1 { font-size: clamp(2.5rem, 7vw, 5rem); letter-spacing: -.06em; line-height: .98; margin: .5rem 0 1.5rem; }
+.lede { color: #b9c6dc; font-size: clamp(1rem, 2vw, 1.2rem); line-height: 1.65; max-width: 720px; }
+.primary-action { background: #47d7ac; border-radius: .5rem; color: #06150f; display: inline-block; font-weight: 700; margin-top: 1.5rem; padding: .85rem 1.1rem; text-decoration: none; }
+.module-grid { display: grid; gap: 1rem; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 4rem; }
+.module-grid article, .status-card { background: #111b30; border: 1px solid #23304a; border-radius: .75rem; padding: 1.25rem; }
+.module-grid h2 { font-size: 1rem; margin-top: 0; }
+.module-grid p { color: #b9c6dc; line-height: 1.5; margin-bottom: 0; }
+.status-page { max-width: 760px; }
+.status-card { font-size: 1.35rem; font-weight: 700; }
+.status-card.available { border-color: #47d7ac; color: #47d7ac; }
+.status-card.unavailable { border-color: #f07f7f; color: #f7a0a0; }
+@media (max-width: 700px) { .site-header { align-items: flex-start; flex-direction: column; gap: .75rem; } .module-grid { grid-template-columns: 1fr; } }
