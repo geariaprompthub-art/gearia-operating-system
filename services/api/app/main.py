@@ -5,7 +5,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, get_structured_logger
+from app.middleware.request_correlation import install_request_correlation
+from app.core.structured_logging import SafeStructuredLogger
 from app.routers.contents import router as contents_router
 from app.routers.enrichment import router as enrichment_router
 from app.routers.embeddings import router as embeddings_router
@@ -32,16 +34,12 @@ async def lifespan(_: FastAPI):
     logger.info("Stopping %s", settings.app_name)
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
-
-
 def _reranking_error_response(_: Request, __: Exception, status_code: int, detail: str) -> JSONResponse:
     """Return the stable public representation for a sanitized reranking failure."""
 
     return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
-@app.exception_handler(RerankingProviderConfigurationError)
 async def handle_reranking_configuration_error(
     request: Request, error: RerankingProviderConfigurationError
 ) -> JSONResponse:
@@ -50,7 +48,6 @@ async def handle_reranking_configuration_error(
     return _reranking_error_response(request, error, 500, "Reranking service is not configured")
 
 
-@app.exception_handler(RerankingProviderUnavailableError)
 async def handle_reranking_unavailable_error(
     request: Request, error: RerankingProviderUnavailableError
 ) -> JSONResponse:
@@ -59,7 +56,6 @@ async def handle_reranking_unavailable_error(
     return _reranking_error_response(request, error, 503, "Reranking service is temporarily unavailable")
 
 
-@app.exception_handler(RerankingProviderResponseError)
 async def handle_reranking_response_error(
     request: Request, error: RerankingProviderResponseError
 ) -> JSONResponse:
@@ -68,22 +64,51 @@ async def handle_reranking_response_error(
     return _reranking_error_response(request, error, 502, "Reranking service returned an invalid response")
 
 
-@app.exception_handler(RerankingPipelineHydrationError)
 async def handle_reranking_hydration_error(
     request: Request, error: RerankingPipelineHydrationError
 ) -> JSONResponse:
     """Map invalid read-model hydration to the stable public error contract."""
 
     return _reranking_error_response(request, error, 500, "Search result hydration failed")
-app.include_router(sources_router)
-app.include_router(contents_router)
-app.include_router(enrichment_router)
-app.include_router(embeddings_router)
-app.include_router(relationships_router)
-app.include_router(search_router)
-app.include_router(scout_router)
+def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> FastAPI:
+    """Compose an isolated FastAPI application with the production defaults."""
+
+    application = FastAPI(title=settings.app_name, lifespan=lifespan)
+    if settings.structured_logging_enabled:
+        install_request_correlation(
+            application,
+            structured_logger or get_structured_logger("gearia.http"),
+        )
+
+    application.add_exception_handler(
+        RerankingProviderConfigurationError,
+        handle_reranking_configuration_error,
+    )
+    application.add_exception_handler(
+        RerankingProviderUnavailableError,
+        handle_reranking_unavailable_error,
+    )
+    application.add_exception_handler(
+        RerankingProviderResponseError,
+        handle_reranking_response_error,
+    )
+    application.add_exception_handler(
+        RerankingPipelineHydrationError,
+        handle_reranking_hydration_error,
+    )
+    application.include_router(sources_router)
+    application.include_router(contents_router)
+    application.include_router(enrichment_router)
+    application.include_router(embeddings_router)
+    application.include_router(relationships_router)
+    application.include_router(search_router)
+    application.include_router(scout_router)
+
+    @application.get("/health", tags=["health"])
+    async def health_check() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return application
 
 
-@app.get("/health", tags=["health"])
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app()

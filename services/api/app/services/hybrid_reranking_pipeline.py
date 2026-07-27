@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from time import perf_counter
 from uuid import UUID
 
+from app.core.log_events import LogEvent
+from app.core.structured_logging import SafeStructuredLogger
 from app.repositories.content_eligibility_repository import ContentEligibilityRepository
 from app.repositories.content_hydration_repository import ContentHydrationRepository, HydratedContent
 from app.repositories.rerank_document_repository import RerankDocumentRecord, RerankDocumentRepository
@@ -32,6 +34,7 @@ class HybridRerankingPipeline:
         hydration_repository: ContentHydrationRepository,
         candidate_pool: type[PreRerankingCandidatePool],
         telemetry: HybridSearchTelemetry = NoOpHybridSearchTelemetry(),
+        structured_logger: SafeStructuredLogger | None = None,
     ) -> None:
         self._eligibility = eligibility_repository
         self._documents = rerank_document_repository
@@ -40,6 +43,7 @@ class HybridRerankingPipeline:
         self._hydration = hydration_repository
         self._candidate_pool = candidate_pool
         self._telemetry = telemetry
+        self._structured_logger = structured_logger
 
     def run(
         self,
@@ -53,82 +57,130 @@ class HybridRerankingPipeline:
 
         self._validate_candidate_limit(candidate_limit)
         pool_started = perf_counter()
+        self._stage_started(HybridSearchStage.CANDIDATE_POOL)
         try:
             candidates = self._candidate_pool.build(rrf_candidates, graph_candidates, candidate_limit)
-        except Exception:
+        except Exception as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.CANDIDATE_POOL, perf_counter() - pool_started, "unexpected")
+            self._stage_failed(HybridSearchStage.CANDIDATE_POOL, pool_started, error)
             raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.CANDIDATE_POOL, perf_counter() - pool_started, input_count=len(rrf_candidates) + len(graph_candidates), output_count=len(candidates))
+        self._stage_completed(HybridSearchStage.CANDIDATE_POOL, pool_started, candidate_count=len(candidates))
         eligibility_started = perf_counter()
+        self._stage_started(HybridSearchStage.ELIGIBILITY)
         try:
             eligible_ids = self._eligibility.filter_eligible([candidate.content_id for candidate in candidates])
-        except Exception:
+        except Exception as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.ELIGIBILITY, perf_counter() - eligibility_started, "unexpected")
+            self._stage_failed(HybridSearchStage.ELIGIBILITY, eligibility_started, error)
             raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.ELIGIBILITY, perf_counter() - eligibility_started, input_count=len(candidates), output_count=len(eligible_ids))
+        self._stage_completed(HybridSearchStage.ELIGIBILITY, eligibility_started, eligible_count=len(eligible_ids))
         if not eligible_ids:
             return {"items": [], "total": 0}
         by_id = {candidate.content_id: candidate for candidate in candidates}
         pool_ids = eligible_ids
         document_hydration_started = perf_counter()
+        self._stage_started(HybridSearchStage.RERANKING_HYDRATION)
         try:
             hydrated_documents = self._documents.hydrate(pool_ids)
             documents_by_id = self._validate_document_hydration(hydrated_documents, pool_ids)
-        except Exception:
+        except Exception as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.RERANKING_HYDRATION, perf_counter() - document_hydration_started, "hydration")
+            self._stage_failed(HybridSearchStage.RERANKING_HYDRATION, document_hydration_started, error)
             raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.RERANKING_HYDRATION, perf_counter() - document_hydration_started, input_count=len(pool_ids), output_count=len(hydrated_documents))
+        self._stage_completed(HybridSearchStage.RERANKING_HYDRATION, document_hydration_started, hydrated_count=len(hydrated_documents))
         documents = [documents_by_id[content_id] for content_id in pool_ids]
         formatting_started = perf_counter()
+        self._stage_started(HybridSearchStage.DOCUMENT_FORMATTING)
         try:
             rerank_candidates = [
                 RerankCandidate(record.content_id, self._formatter.format(RerankDocument(record.title, record.summary, record.category, record.topics, record.keywords)), rank, by_id[record.content_id].matched_by)
                 for rank, record in enumerate(documents, start=1)
             ]
-        except Exception:
+        except Exception as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.DOCUMENT_FORMATTING, perf_counter() - formatting_started, "unexpected")
+            self._stage_failed(HybridSearchStage.DOCUMENT_FORMATTING, formatting_started, error)
             raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.DOCUMENT_FORMATTING, perf_counter() - formatting_started, input_count=len(documents), output_count=len(rerank_candidates))
+        self._stage_completed(HybridSearchStage.DOCUMENT_FORMATTING, formatting_started, formatted_count=len(rerank_candidates))
         provider_started = perf_counter()
+        self._stage_started(HybridSearchStage.PROVIDER_RERANKING)
         try:
             reranked = self._reranker.rerank(query, rerank_candidates) if rerank_candidates else []
-        except Exception:
+        except Exception as error:
             if rerank_candidates:
                 emit_safely(self._telemetry.record_provider_call, perf_counter() - provider_started, input_count=len(rerank_candidates), output_count=0, status="error")
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.PROVIDER_RERANKING, perf_counter() - provider_started, "provider")
+            self._stage_failed(HybridSearchStage.PROVIDER_RERANKING, provider_started, error)
             raise
         if rerank_candidates:
             emit_safely(self._telemetry.record_provider_call, perf_counter() - provider_started, input_count=len(rerank_candidates), output_count=len(reranked), status="success")
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.PROVIDER_RERANKING, perf_counter() - provider_started, input_count=len(rerank_candidates), output_count=len(reranked))
+        self._stage_completed(HybridSearchStage.PROVIDER_RERANKING, provider_started, reranked_count=len(reranked))
         final_started = perf_counter()
-        final = reranked[:top_k]
+        self._stage_started(HybridSearchStage.FINAL_TOP_K)
+        try:
+            final = reranked[:top_k]
+        except Exception as error:
+            self._stage_failed(HybridSearchStage.FINAL_TOP_K, final_started, error)
+            raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.FINAL_TOP_K, perf_counter() - final_started, input_count=len(reranked), output_count=len(final))
+        self._stage_completed(HybridSearchStage.FINAL_TOP_K, final_started, reranked_count=len(final))
         final_ids = [candidate.content_id for candidate in final]
         public_hydration_started = perf_counter()
+        self._stage_started(HybridSearchStage.PUBLIC_HYDRATION)
         try:
             hydrated = self._hydration.hydrate(final_ids) if final else []
             contents_by_id = self._validate_public_hydration(hydrated, final_ids)
-        except Exception:
+        except Exception as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.PUBLIC_HYDRATION, perf_counter() - public_hydration_started, "hydration")
+            self._stage_failed(HybridSearchStage.PUBLIC_HYDRATION, public_hydration_started, error)
             raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.PUBLIC_HYDRATION, perf_counter() - public_hydration_started, input_count=len(final_ids), output_count=len(hydrated))
+        self._stage_completed(HybridSearchStage.PUBLIC_HYDRATION, public_hydration_started, hydrated_count=len(hydrated))
         ordered_contents = [contents_by_id[content_id] for content_id in final_ids]
         provenance = {candidate.content_id: candidate.matched_by for candidate in final}
         response_started = perf_counter()
-        items = [
-            {
-                "rank": rank,
-                "content_id": content.content_id,
-                "title": content.title,
-                "url": content.url,
-                "summary": content.summary,
-                "matched_by": list(provenance[content.content_id]),
-            }
-            for rank, content in enumerate(ordered_contents, 1)
-        ]
-        result = {"items": items, "total": len(items)}
+        self._stage_started(HybridSearchStage.RESPONSE_BUILDING)
+        try:
+            items = [
+                {
+                    "rank": rank,
+                    "content_id": content.content_id,
+                    "title": content.title,
+                    "url": content.url,
+                    "summary": content.summary,
+                    "matched_by": list(provenance[content.content_id]),
+                }
+                for rank, content in enumerate(ordered_contents, 1)
+            ]
+            result = {"items": items, "total": len(items)}
+        except Exception as error:
+            self._stage_failed(HybridSearchStage.RESPONSE_BUILDING, response_started, error)
+            raise
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.RESPONSE_BUILDING, perf_counter() - response_started, input_count=len(ordered_contents), output_count=len(items))
+        self._stage_completed(HybridSearchStage.RESPONSE_BUILDING, response_started)
         return result
+
+    def _stage_started(self, stage: str) -> None:
+        """Emit the pipeline-owned start event without user or content data."""
+
+        if self._structured_logger is not None:
+            self._structured_logger.info(LogEvent.HYBRID_PIPELINE_STAGE_STARTED, "Hybrid pipeline stage started", stage=stage)
+
+    def _stage_completed(self, stage: str, started: float, **counts: int) -> None:
+        """Emit the pipeline-owned completion event with bounded aggregate counts."""
+
+        if self._structured_logger is not None:
+            self._structured_logger.info(LogEvent.HYBRID_PIPELINE_STAGE_COMPLETED, "Hybrid pipeline stage completed", stage=stage, duration_ms=(perf_counter() - started) * 1000, **counts)
+
+    def _stage_failed(self, stage: str, started: float, error: Exception) -> None:
+        """Emit one safe failure event and preserve the original exception."""
+
+        if self._structured_logger is not None:
+            self._structured_logger.error(LogEvent.HYBRID_PIPELINE_STAGE_FAILED, "Hybrid pipeline stage failed", stage=stage, duration_ms=(perf_counter() - started) * 1000, error_type=type(error).__name__)
 
     @staticmethod
     def _validate_candidate_limit(candidate_limit: int) -> None:

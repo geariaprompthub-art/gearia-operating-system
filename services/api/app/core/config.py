@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     voyage_rerank_model: str = "rerank-2.5"
     voyage_rerank_timeout_seconds: float = Field(default=10.0, gt=0)
     hybrid_search_telemetry_enabled: bool = True
+    structured_logging_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

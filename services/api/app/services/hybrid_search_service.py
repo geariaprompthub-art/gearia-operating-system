@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from time import perf_counter
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.log_events import LogEvent
+from app.core.structured_logging import SafeStructuredLogger
 from app.repositories.lexical_search_repository import LexicalSearchRepository
 from app.services.graph_expansion_service import GraphExpansionService
 from app.services.hybrid_reranking_pipeline import HybridRerankingPipeline
@@ -33,6 +35,7 @@ class HybridSearchService:
         reranking_pipeline: HybridRerankingPipeline,
         settings: HybridSearchSettings = HybridSearchSettings(),
         telemetry: HybridSearchTelemetry = NoOpHybridSearchTelemetry(),
+        structured_logger: SafeStructuredLogger | None = None,
     ) -> None:
         self._lexical_repository = lexical_repository
         self._vector_candidates = vector_candidates
@@ -40,9 +43,36 @@ class HybridSearchService:
         self._reranking_pipeline = reranking_pipeline
         self._settings = settings
         self._telemetry = telemetry
+        self._structured_logger = structured_logger
 
     def search(self, query: str, top_k: int) -> dict[str, object]:
-        """Run retrieval, Graph backfill and one final ordered hydration."""
+        """Run one observable hybrid-search lifecycle without changing retrieval semantics."""
+
+        started = perf_counter()
+        if self._structured_logger is not None:
+            self._structured_logger.info(LogEvent.HYBRID_SEARCH_STARTED, "Hybrid search started")
+        try:
+            result = self._search(query, top_k)
+        except Exception as error:
+            if self._structured_logger is not None:
+                self._structured_logger.error(
+                    LogEvent.HYBRID_SEARCH_FAILED,
+                    "Hybrid search failed",
+                    duration_ms=(perf_counter() - started) * 1000,
+                    error_type=type(error).__name__,
+                )
+            raise
+        if self._structured_logger is not None:
+            self._structured_logger.info(
+                LogEvent.HYBRID_SEARCH_COMPLETED,
+                "Hybrid search completed",
+                duration_ms=(perf_counter() - started) * 1000,
+                result_count=int(result["total"]),
+            )
+        return result
+
+    def _search(self, query: str, top_k: int) -> dict[str, object]:
+        """Run the pre-existing retrieval, Graph backfill and final hydration flow."""
 
         started = perf_counter()
         emit_safely(self._telemetry.record_request_started)

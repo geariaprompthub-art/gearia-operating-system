@@ -6,6 +6,7 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.logging import get_structured_logger
 from app.core.prometheus_hybrid_search_telemetry import PrometheusHybridSearchTelemetry
 from app.db import get_db
 from app.repositories.content_eligibility_repository import ContentEligibilityRepository
@@ -55,6 +56,7 @@ def get_hybrid_search_service(
         model=settings.voyage_rerank_model,
         timeout_seconds=settings.voyage_rerank_timeout_seconds,
     )
+    structured_logger = get_structured_logger("gearia.hybrid_search")
     reranking_pipeline = HybridRerankingPipeline(
         eligibility_repository=ContentEligibilityRepository(database),
         rerank_document_repository=RerankDocumentRepository(database),
@@ -63,6 +65,7 @@ def get_hybrid_search_service(
         hydration_repository=ContentHydrationRepository(database),
         candidate_pool=PreRerankingCandidatePool,
         telemetry=telemetry,
+        structured_logger=structured_logger,
     )
     return HybridSearchService(
         lexical_repository=LexicalSearchRepository(database),
@@ -70,6 +73,7 @@ def get_hybrid_search_service(
         graph_expansion_service=graph_expansion_service,
         reranking_pipeline=reranking_pipeline,
         telemetry=telemetry,
+        structured_logger=structured_logger,
         settings=HybridSearchSettings(
             lexical_candidate_k=settings.hybrid_lexical_candidate_k,
             vector_candidate_k=settings.hybrid_vector_candidate_k,

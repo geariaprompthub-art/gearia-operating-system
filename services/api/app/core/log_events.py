@@ -1,0 +1,19 @@
+"""Stable structured-log event names."""
+
+
+class LogEvent:
+    HTTP_REQUEST_STARTED = "http_request_started"
+    HTTP_REQUEST_COMPLETED = "http_request_completed"
+    HTTP_REQUEST_FAILED = "http_request_failed"
+    HYBRID_SEARCH_STARTED = "hybrid_search_started"
+    HYBRID_SEARCH_COMPLETED = "hybrid_search_completed"
+    HYBRID_SEARCH_FAILED = "hybrid_search_failed"
+    HYBRID_PIPELINE_STAGE_STARTED = "hybrid_pipeline_stage_started"
+    HYBRID_PIPELINE_STAGE_COMPLETED = "hybrid_pipeline_stage_completed"
+    HYBRID_PIPELINE_STAGE_FAILED = "hybrid_pipeline_stage_failed"
+    HYBRID_SEARCH_STAGE_STARTED = "hybrid_search_stage_started"
+    HYBRID_SEARCH_STAGE_COMPLETED = "hybrid_search_stage_completed"
+    HYBRID_SEARCH_STAGE_FAILED = "hybrid_search_stage_failed"
+    HYBRID_SEARCH_PROVIDER_STARTED = "hybrid_search_provider_started"
+    HYBRID_SEARCH_PROVIDER_COMPLETED = "hybrid_search_provider_completed"
+    HYBRID_SEARCH_PROVIDER_FAILED = "hybrid_search_provider_failed"
