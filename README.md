@@ -31,4 +31,4 @@ O Scout aceita apenas URLs HTTP(S) públicas, limita redirects, timeout, tamanho
 
 Execute testes pelo contêiner: `docker compose --profile tools run --rm --no-deps api-test pytest -q`. Para migration: `docker compose exec api alembic upgrade head`. O CI valida compilação Python, migrations, testes, lockfile, typecheck e build web sem chaves externas.
 
-Consulte [P0](docs/productization/SPRINT-P0.md), [P1A](docs/identity/P1A.md) e a [Feature Matrix](docs/productization/FEATURE-MATRIX.md) para escopo, evidências e pendências.
+Consulte [P0](docs/productization/SPRINT-P0.md), [P1A](docs/identity/P1A.md), as [Fases 2](docs/identity/P1B-phase-2.md), [3](docs/identity/P1B-phase-3-login.md), [4](docs/identity/P1B-phase-4-refresh.md), [5](docs/identity/P1B-phase-5-principal.md) e [6](docs/identity/P1B-phase-6-logout.md) da P1B, além da [Feature Matrix](docs/productization/FEATURE-MATRIX.md), para escopo, evidências e pendências.

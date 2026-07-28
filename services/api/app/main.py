@@ -19,6 +19,7 @@ from app.routers.relationships import router as relationships_router
 from app.routers.search import router as search_router
 from app.routers.scout import router as scout_router
 from app.routers.sources import router as sources_router
+from app.routers.auth import router as auth_router
 from app.services.hybrid_reranking_pipeline import RerankingPipelineHydrationError
 from app.services.reranking_provider_errors import (
     RerankingProviderConfigurationError,
@@ -90,7 +91,7 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
         allow_origins=settings.cors_origins,
         allow_credentials=settings.cors_allow_credentials,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token"],
     )
     if settings.structured_logging_enabled:
         install_request_correlation(
@@ -122,6 +123,7 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
     application.include_router(relationships_router)
     application.include_router(search_router)
     application.include_router(scout_router)
+    application.include_router(auth_router)
 
     @application.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:

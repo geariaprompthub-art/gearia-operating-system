@@ -7,4 +7,9 @@
 | Conteúdo | Sources/contents/enriquecimento | Sim | Existente | Sim | Não | Não | logs | existente | Preservado | suíte regressiva | console autenticado |
 | Retrieval | lexical/vector/hybrid/reranking | Sim | Existente | Sim | Não | Não | telemetria | existente | Preservado | suíte regressiva | políticas de acesso |
 | Identidade | Identity Core interno (User, e-mail, Argon2id) | Sim, interno | `20260727_0007` | Sim | Não | Não | Não | Não | Entregue | P1A: testes unitários e PostgreSQL | endpoints, sessões e autorização |
+| Autenticação | Infraestrutura interna de sessão, refresh token, JWT, CSRF, cookies e rate limit | Sim, interna | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 2 entregue | P1B: serviços, repositories e PostgreSQL | login, refresh, logout e usuário atual |
+| Autenticação | Login público com sessão e cookies centralizados | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 3 entregue | P1B: POST /auth/login | refresh, logout e usuário atual |
+| Autenticação | Refresh HTTP com rotação, CSRF e detecção de reutilização | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 4 entregue | P1B: POST /auth/refresh | logout e usuário atual |
+| Autenticação | Principal autenticado e usuário atual | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 5 entregue | P1B: GET /auth/me | logout |
+| Autenticação | Logout da sessão atual com CSRF e revogação transacional | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 6 em validação | P1B: POST /auth/logout | auditoria final e encerramento |
 | Frontend | Console operacional | Não | Não | lint/typecheck/build | Sim | Não | status público | Sim | Entregue | build e smoke Docker | UX autenticada |

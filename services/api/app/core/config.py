@@ -38,6 +38,21 @@ class Settings(BaseSettings):
     voyage_rerank_timeout_seconds: float = Field(default=10.0, gt=0)
     hybrid_search_telemetry_enabled: bool = True
     structured_logging_enabled: bool = True
+    auth_enabled: bool = False
+    auth_jwt_private_key: str | None = None
+    auth_jwt_public_key: str | None = None
+    auth_jwt_kid: str | None = None
+    auth_jwt_issuer: str = "gearia-api"
+    auth_jwt_audience: str = "gearia-app"
+    auth_access_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    auth_refresh_ttl_seconds: int = Field(default=2_592_000, ge=3600, le=7_776_000)
+    auth_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
+    auth_cookie_secure: bool = False
+    auth_cookie_domain: str | None = None
+    auth_cookie_samesite: str = "lax"
+    auth_login_limit: int = Field(default=5, ge=1, le=100)
+    auth_refresh_limit: int = Field(default=20, ge=1, le=200)
+    auth_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -45,6 +60,8 @@ class Settings(BaseSettings):
     def validate_production_security(self) -> "Settings":
         """Reject insecure production defaults without constraining local development."""
 
+        if self.auth_cookie_samesite not in {"lax", "strict", "none"}:
+            raise ValueError("auth_cookie_samesite is invalid")
         if self.environment.lower() != "production":
             return self
         if self.debug:
@@ -59,6 +76,14 @@ class Settings(BaseSettings):
             raise ValueError("CORS wildcard cannot be combined with credentials")
         if "gearia:gearia@" in self.database_url:
             raise ValueError("database_url must not use local default credentials in production")
+        if self.auth_enabled and (
+            not self.auth_jwt_private_key
+            or not self.auth_jwt_public_key
+            or not self.auth_jwt_kid
+        ):
+            raise ValueError("Ed25519 authentication keys and kid must be configured in production")
+        if self.auth_enabled and not self.auth_cookie_secure:
+            raise ValueError("authentication cookies must be secure in production")
         return self
 
 
