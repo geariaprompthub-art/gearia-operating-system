@@ -1,5 +1,11 @@
 # GearIA Operating System
 
+## Workspace tenancy (P2A)
+
+P2A introduces a personal `Workspace` as the boundary for private product data.
+Canonical sources and contents remain shared; workspace visibility is a rebuildable projection.
+See [P2A workspace tenancy](docs/productization/P2A-WORKSPACE-TENANCY.md) for the scoped API and execution-context contract.
+
 Plataforma de conteúdo com FastAPI, PostgreSQL/pgvector, Redis e Next.js. O repositório preserva ingestão RSS, enriquecimento determinístico, busca lexical, vetorial, híbrida e reranking. A P0 endurece a operação sem introduzir login, billing ou novos providers.
 
 ## Serviços e arquitetura
@@ -31,4 +37,4 @@ O Scout aceita apenas URLs HTTP(S) públicas, limita redirects, timeout, tamanho
 
 Execute testes pelo contêiner: `docker compose --profile tools run --rm --no-deps api-test pytest -q`. Para migration: `docker compose exec api alembic upgrade head`. O CI valida compilação Python, migrations, testes, lockfile, typecheck e build web sem chaves externas.
 
-Consulte [P0](docs/productization/SPRINT-P0.md), [P1A](docs/identity/P1A.md), as [Fases 2](docs/identity/P1B-phase-2.md), [3](docs/identity/P1B-phase-3-login.md), [4](docs/identity/P1B-phase-4-refresh.md), [5](docs/identity/P1B-phase-5-principal.md) e [6](docs/identity/P1B-phase-6-logout.md) da P1B, além da [Feature Matrix](docs/productization/FEATURE-MATRIX.md), para escopo, evidências e pendências.
+Consulte [P0](docs/productization/SPRINT-P0.md), [P1A](docs/identity/P1A.md), as [Fases 2](docs/identity/P1B-phase-2.md), [3](docs/identity/P1B-phase-3-login.md), [4](docs/identity/P1B-phase-4-refresh.md), [5](docs/identity/P1B-phase-5-principal.md) e [6](docs/identity/P1B-phase-6-logout.md) da P1B, além das entregas P2B de [cadastro](docs/identity/P2B-phase-4-registration.md), [verificação](docs/identity/P2B-phase-5-email-verification.md), [password reset](docs/identity/P2B-phase-6-password-reset.md) e [anonimização](docs/identity/P2B-phase-7-account-anonymization.md), e da [Feature Matrix](docs/productization/FEATURE-MATRIX.md), para escopo, evidências e pendências.

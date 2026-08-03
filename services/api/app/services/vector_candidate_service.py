@@ -1,6 +1,8 @@
 """Shared internal vector-candidate retrieval for exact and hybrid search."""
 
+from collections.abc import Sequence
 from math import isfinite
+from uuid import UUID
 
 from app.repositories.vector_search_repository import (
     EMBEDDING_DIMENSIONS,
@@ -36,17 +38,24 @@ class VectorCandidateService:
             and record.content_hash == current_hash
         )
 
-    def search(self, query: str, candidate_k: int, threshold: float) -> list[VectorSearchCandidate]:
+    def search(
+        self,
+        query: str,
+        candidate_k: int,
+        threshold: float,
+        visible_content_ids: Sequence[UUID] | None = None,
+    ) -> list[VectorSearchCandidate]:
         """Return ordered candidates without persistence or public-schema concerns."""
 
         vector = self._provider.embed_text(query.strip())
         if len(vector) != EMBEDDING_DIMENSIONS or not all(isfinite(float(value)) for value in vector):
             raise RuntimeError("Invalid query embedding")
-        eligible_ids = [
-            record.content.id
-            for record in self._repository.eligible_embedding_records()
-            if self._is_eligible(record)
-        ]
+        records = (
+            self._repository.eligible_embedding_records()
+            if visible_content_ids is None
+            else self._repository.eligible_embedding_records(visible_content_ids)
+        )
+        eligible_ids = [record.content.id for record in records if self._is_eligible(record)]
         if not eligible_ids:
             return []
         return self._repository.search_candidates(vector, eligible_ids, candidate_k, threshold)

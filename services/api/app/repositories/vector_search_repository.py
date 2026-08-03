@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import literal, select
@@ -64,7 +65,9 @@ class VectorSearchRepository:
     def __init__(self, database: Session) -> None:
         self._database = database
 
-    def eligible_embedding_records(self) -> list[EmbeddingEligibilityRecord]:
+    def eligible_embedding_records(
+        self, visible_content_ids: Sequence[UUID] | None = None
+    ) -> list[EmbeddingEligibilityRecord]:
         """Return metadata-only candidates; vector values are never loaded here."""
 
         statement = (
@@ -91,6 +94,10 @@ class VectorSearchRepository:
                 )
             )
         )
+        if visible_content_ids is not None:
+            if not visible_content_ids:
+                return []
+            statement = statement.where(Content.id.in_(visible_content_ids))
         return [
             EmbeddingEligibilityRecord(
                 content=content,

@@ -1,7 +1,9 @@
 """Sequential, fail-closed composition of lexical, vector, RRF and Graph retrieval."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
+from uuid import UUID
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.log_events import LogEvent
@@ -45,14 +47,16 @@ class HybridSearchService:
         self._telemetry = telemetry
         self._structured_logger = structured_logger
 
-    def search(self, query: str, top_k: int) -> dict[str, object]:
+    def search(
+        self, query: str, top_k: int, visible_content_ids: Sequence[UUID] | None = None
+    ) -> dict[str, object]:
         """Run one observable hybrid-search lifecycle without changing retrieval semantics."""
 
         started = perf_counter()
         if self._structured_logger is not None:
             self._structured_logger.info(LogEvent.HYBRID_SEARCH_STARTED, "Hybrid search started")
         try:
-            result = self._search(query, top_k)
+            result = self._search(query, top_k, visible_content_ids)
         except Exception as error:
             if self._structured_logger is not None:
                 self._structured_logger.error(
@@ -71,7 +75,9 @@ class HybridSearchService:
             )
         return result
 
-    def _search(self, query: str, top_k: int) -> dict[str, object]:
+    def _search(
+        self, query: str, top_k: int, visible_content_ids: Sequence[UUID] | None
+    ) -> dict[str, object]:
         """Run the pre-existing retrieval, Graph backfill and final hydration flow."""
 
         started = perf_counter()
@@ -85,7 +91,13 @@ class HybridSearchService:
         )
         lexical_started = perf_counter()
         try:
-            lexical = self._lexical_repository.search(normalized_query, lexical_limit)
+            lexical = (
+                self._lexical_repository.search(normalized_query, lexical_limit)
+                if visible_content_ids is None
+                else self._lexical_repository.search(
+                    normalized_query, lexical_limit, visible_content_ids
+                )
+            )
         except SQLAlchemyError as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.LEXICAL_RETRIEVAL, perf_counter() - lexical_started, "retrieval")
             self._record_request_failure(started, "retrieval")
@@ -93,7 +105,13 @@ class HybridSearchService:
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.LEXICAL_RETRIEVAL, perf_counter() - lexical_started, input_count=0, output_count=len(lexical))
         vector_started = perf_counter()
         try:
-            vector = self._vector_candidates.search(normalized_query, vector_limit, -1.0)
+            vector = (
+                self._vector_candidates.search(normalized_query, vector_limit, -1.0)
+                if visible_content_ids is None
+                else self._vector_candidates.search(
+                    normalized_query, vector_limit, -1.0, visible_content_ids
+                )
+            )
         except SQLAlchemyError as error:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.VECTOR_RETRIEVAL, perf_counter() - vector_started, "retrieval")
             self._record_request_failure(started, "retrieval")
@@ -120,6 +138,11 @@ class HybridSearchService:
             emit_safely(self._telemetry.record_stage_failed, HybridSearchStage.GRAPH_EXPANSION, perf_counter() - graph_started, "graph")
             self._record_request_failure(started, "graph")
             raise RuntimeError("Hybrid retrieval dependency unavailable") from error
+        if visible_content_ids is not None:
+            visible_ids = set(visible_content_ids)
+            graph_candidates = [
+                candidate for candidate in graph_candidates if candidate.content_id in visible_ids
+            ]
         emit_safely(self._telemetry.record_stage_completed, HybridSearchStage.GRAPH_EXPANSION, perf_counter() - graph_started, input_count=len(fused), output_count=len(graph_candidates))
         try:
             result = self._reranking_pipeline.run(normalized_query, fused, graph_candidates, top_k, candidate_limit=rrf_candidate_limit)

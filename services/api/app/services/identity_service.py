@@ -21,11 +21,17 @@ class IdentityService:
         return UserDTO(id=user.id, email=user.email, status=user.status, email_verified_at=user.email_verified_at, token_version=user.token_version, created_at=user.created_at, updated_at=user.updated_at)
 
     def create_local_user(self, email: object, password: object) -> UserDTO:
+        """Stage a local user in the caller-owned transaction without committing."""
         normalized = normalize_email(email)
         if self._repository.exists_by_normalized_email(normalized.normalized):
             raise EmailAlreadyExistsError("email already exists")
         user = User(email=normalized.email, email_normalized=normalized.normalized, password_hash=self._hasher.hash(password))
         return self._dto(self._repository.create(user))
+
+    def get_user_by_normalized_email(self, normalized_email: str) -> User | None:
+        """Expose the internal registration lookup without exposing repository state."""
+
+        return self._repository.get_by_normalized_email(normalized_email)
 
     def verify_credentials(self, email: object, password: object) -> CredentialResult:
         normalized = normalize_email(email)

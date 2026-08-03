@@ -11,6 +11,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gearia}:${POSTGRES_PASSWORD:-gearia}@postgres:5432/${POSTGRES_DB:-gearia}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LIFECYCLE_TOKEN_PEPPER: ${LIFECYCLE_TOKEN_PEPPER:?LIFECYCLE_TOKEN_PEPPER is required}
       TRUSTED_HOSTS: ${TRUSTED_HOSTS:-["localhost","127.0.0.1","test","testserver"]}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
       CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}

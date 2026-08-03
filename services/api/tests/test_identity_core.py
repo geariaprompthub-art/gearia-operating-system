@@ -247,8 +247,9 @@ def test_repository_reuses_session_after_unique_constraint_failure(database: Ses
             password_hash=encoded,
         )
     )
+    database.commit()
 
-    with pytest.raises(EmailAlreadyExistsError):
+    with pytest.raises(IntegrityError):
         repository.create(
             User(
                 email="ONE@example.com",
@@ -257,7 +258,9 @@ def test_repository_reuses_session_after_unique_constraint_failure(database: Ses
             )
         )
 
+    database.rollback()
     assert repository.exists_by_normalized_email("one@example.com")
+    database.rollback()
     assert database.is_active
 
 
@@ -274,4 +277,5 @@ def test_repository_does_not_mask_non_unique_integrity_errors(database: Session)
             )
         )
 
+    database.rollback()
     assert database.is_active

@@ -17,3 +17,8 @@ class LogEvent:
     HYBRID_SEARCH_PROVIDER_STARTED = "hybrid_search_provider_started"
     HYBRID_SEARCH_PROVIDER_COMPLETED = "hybrid_search_provider_completed"
     HYBRID_SEARCH_PROVIDER_FAILED = "hybrid_search_provider_failed"
+    REGISTRATION_DELIVERY_FAILED = "registration_delivery_failed"
+    EMAIL_VERIFICATION_FAILED = "email_verification_failed"
+    PASSWORD_RESET_FAILED = "password_reset_failed"
+    ACCOUNT_ANONYMIZED = "account_anonymized"
+    ACCOUNT_ANONYMIZATION_FAILED = "account_anonymization_failed"

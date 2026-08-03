@@ -97,3 +97,21 @@ class AuthSessionRepository:
         )
         self._database.flush()
         return int(result.rowcount or 0)
+
+    def revoke_and_anonymize_all_by_user(self, user_id: UUID, reason: str) -> list[UUID]:
+        """Revoke sessions and remove retained network metadata for an anonymized user."""
+
+        session_ids = list(self._database.scalars(select(AuthSession.id).where(AuthSession.user_id == user_id)))
+        self._database.execute(
+            update(AuthSession)
+            .where(AuthSession.user_id == user_id)
+            .values(
+                revoked_at=datetime.now(UTC),
+                revocation_reason=reason,
+                ip_address=None,
+                user_agent=None,
+                csrf_secret_hash="0" * 64,
+            )
+        )
+        self._database.flush()
+        return session_ids

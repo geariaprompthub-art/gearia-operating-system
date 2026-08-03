@@ -12,4 +12,6 @@
 | Autenticação | Refresh HTTP com rotação, CSRF e detecção de reutilização | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 4 entregue | P1B: POST /auth/refresh | logout e usuário atual |
 | Autenticação | Principal autenticado e usuário atual | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 5 entregue | P1B: GET /auth/me | logout |
 | Autenticação | Logout da sessão atual com CSRF e revogação transacional | Sim | `20260728_0008` | Sim | Não | Não | Não | Não | Fase 6 em validação | P1B: POST /auth/logout | auditoria final e encerramento |
+| Identidade | Cadastro, verificação de e-mail e password reset P2B | Sim | `20260730_0010` | Sim | Não | Não | logs sanitizados | Não | Entregue | P2B fases 4-6 | entrega de e-mail real futura |
+| Identidade | Anonimização irreversível da conta e bloqueio do workspace | Sim | `20260730_0010` | Sim, PostgreSQL | Não | CSRF + rate limit | logs sanitizados | Não | Entregue | P2B fase 7: DELETE /auth/me | remoção física e PATCH /auth/me fora de escopo |
 | Frontend | Console operacional | Não | Não | lint/typecheck/build | Sim | Não | status público | Sim | Entregue | build e smoke Docker | UX autenticada |

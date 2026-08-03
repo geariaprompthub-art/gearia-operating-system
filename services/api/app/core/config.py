@@ -51,8 +51,19 @@ class Settings(BaseSettings):
     auth_cookie_domain: str | None = None
     auth_cookie_samesite: str = "lax"
     auth_login_limit: int = Field(default=5, ge=1, le=100)
+    auth_register_ip_limit: int = Field(default=5, ge=1, le=100)
+    auth_register_email_limit: int = Field(default=5, ge=1, le=100)
+    auth_verify_ip_limit: int = Field(default=10, ge=1, le=200)
+    auth_verify_token_limit: int = Field(default=10, ge=1, le=200)
+    auth_password_reset_request_ip_limit: int = Field(default=5, ge=1, le=100)
+    auth_password_reset_request_email_limit: int = Field(default=5, ge=1, le=100)
+    auth_password_reset_confirm_ip_limit: int = Field(default=10, ge=1, le=200)
+    auth_password_reset_confirm_token_limit: int = Field(default=10, ge=1, le=200)
+    auth_account_anonymization_ip_limit: int = Field(default=3, ge=1, le=100)
+    auth_account_anonymization_user_limit: int = Field(default=3, ge=1, le=100)
     auth_refresh_limit: int = Field(default=20, ge=1, le=200)
     auth_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    lifecycle_token_pepper: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -62,6 +73,8 @@ class Settings(BaseSettings):
 
         if self.auth_cookie_samesite not in {"lax", "strict", "none"}:
             raise ValueError("auth_cookie_samesite is invalid")
+        if self.environment.lower() != "test" and not self.lifecycle_token_pepper:
+            raise ValueError("lifecycle_token_pepper must be configured outside test environments")
         if self.environment.lower() != "production":
             return self
         if self.debug:

@@ -2,6 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -20,6 +22,7 @@ from app.routers.search import router as search_router
 from app.routers.scout import router as scout_router
 from app.routers.sources import router as sources_router
 from app.routers.auth import router as auth_router
+from app.routers.workspaces import router as workspaces_router
 from app.services.hybrid_reranking_pipeline import RerankingPipelineHydrationError
 from app.services.reranking_provider_errors import (
     RerankingProviderConfigurationError,
@@ -75,6 +78,38 @@ async def handle_reranking_hydration_error(
     """Map invalid read-model hydration to the stable public error contract."""
 
     return _reranking_error_response(request, error, 500, "Search result hydration failed")
+
+
+async def handle_request_validation_error(
+    request: Request, error: RequestValidationError
+) -> JSONResponse:
+    """Sanitize only anonymous registration validation, which can include a password."""
+
+    if request.url.path == "/auth/register":
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Invalid registration request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    if request.url.path == "/auth/email-verification/confirm":
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Invalid email verification request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    if request.url.path in {"/auth/password-reset/request", "/auth/password-reset/confirm"}:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Invalid password reset request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    if request.url.path == "/auth/me" and request.method == "DELETE":
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Invalid account deletion request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await request_validation_exception_handler(request, error)
 def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> FastAPI:
     """Compose an isolated FastAPI application with the production defaults."""
 
@@ -116,6 +151,7 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
         RerankingPipelineHydrationError,
         handle_reranking_hydration_error,
     )
+    application.add_exception_handler(RequestValidationError, handle_request_validation_error)
     application.include_router(sources_router)
     application.include_router(contents_router)
     application.include_router(enrichment_router)
@@ -124,6 +160,7 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
     application.include_router(search_router)
     application.include_router(scout_router)
     application.include_router(auth_router)
+    application.include_router(workspaces_router)
 
     @application.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:

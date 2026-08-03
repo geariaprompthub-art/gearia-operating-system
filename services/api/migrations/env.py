@@ -5,7 +5,17 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.db import Base
-from app.models import ContentEmbedding, ContentRelationship, Source  # noqa: F401 - ensures model metadata is registered
+from app.models import (  # noqa: F401 - ensures model metadata is registered
+    ContentEmbedding,
+    ContentRelationship,
+    EmailVerificationToken,
+    PasswordResetToken,
+    Source,
+    User,
+    Workspace,
+    WorkspaceContentVisibility,
+    WorkspaceSource,
+)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

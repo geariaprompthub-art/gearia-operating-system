@@ -3,7 +3,6 @@
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -22,6 +21,11 @@ class UserRepository:
     def get_by_id(self, user_id: UUID) -> User | None:
         return self._database.get(User, user_id)
 
+    def get_by_id_for_update(self, user_id: UUID) -> User | None:
+        """Lock one identity before a caller-owned lifecycle transition."""
+
+        return self._database.scalar(select(User).where(User.id == user_id).with_for_update())
+
     def get_by_normalized_email(self, email_normalized: str) -> User | None:
         return self._database.scalar(select(User).where(User.email_normalized == email_normalized))
 
@@ -29,17 +33,8 @@ class UserRepository:
         return self.get_by_normalized_email(email_normalized) is not None
 
     def create(self, user: User) -> User:
-        try:
-            self._database.add(user)
-            self._database.commit()
-            self._database.refresh(user)
-            return user
-        except IntegrityError as error:
-            self._database.rollback()
-            constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
-            if constraint_name == "uq_users_email_normalized" or (
-                constraint_name is None
-                and "users.email_normalized" in str(error.orig)
-            ):
-                raise EmailAlreadyExistsError("email already exists") from error
-            raise
+        """Stage and flush a user; the application boundary owns commit/rollback."""
+
+        self._database.add(user)
+        self._database.flush()
+        return user

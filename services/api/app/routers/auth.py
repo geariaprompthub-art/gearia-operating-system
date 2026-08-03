@@ -3,9 +3,14 @@
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from app.schemas.auth import CurrentUserResponse, ErrorResponse, LoginRequest, LoginResponse, LoginUser, RefreshResponse
+from app.schemas.auth import AccountDeletionRequest, CurrentUserResponse, EmailVerificationConfirmRequest, EmailVerificationConfirmResponse, ErrorResponse, LoginRequest, LoginResponse, LoginUser, PasswordResetConfirmRequest, PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetRequestResponse, RefreshResponse, RegisterRequest, RegisterResponse
 from app.services.access_token_authenticator import AuthenticatedPrincipal
 from app.services.auth_dependencies import get_auth_service
+from app.services.auth_dependencies import get_registration_application_service
+from app.services.auth_dependencies import get_email_verification_application_service
+from app.services.auth_dependencies import get_password_reset_application_service
+from app.services.auth_dependencies import get_account_anonymization_application_service
+from app.services.auth_dependencies import get_cookie_policy
 from app.services.principal_dependencies import get_current_principal
 from app.services.auth_service import (
     AccountStatusError,
@@ -21,8 +26,196 @@ from app.services.auth_service import (
     InvalidLogoutSessionError,
     LogoutError,
 )
+from app.services.registration_application_service import (
+    RegistrationApplicationService,
+    RegistrationRateLimitedError,
+    RegistrationUnavailableError,
+)
+from app.services.email_verification_application_service import (
+    EmailVerificationApplicationService,
+    EmailVerificationRateLimitedError,
+    EmailVerificationUnavailableError,
+)
+from app.services.password_reset_application_service import (
+    PasswordResetApplicationService,
+    PasswordResetRateLimitedError,
+    PasswordResetUnavailableError,
+)
+from app.services.account_anonymization_application_service import (
+    AccountAnonymizationApplicationService,
+    AccountAnonymizationCsrfError,
+    AccountAnonymizationRateLimitedError,
+    AccountAnonymizationUnavailableError,
+)
+from app.services.cookie_policy import CookiePolicy
+from app.core.correlation import correlation_context
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+
+@router.post(
+    "/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        429: {"model": ErrorResponse, "description": "Password-reset rate limited"},
+        500: {"model": ErrorResponse, "description": "Password-reset unavailable"},
+    },
+    summary="Request password reset without revealing account state",
+)
+def request_password_reset(
+    payload: PasswordResetRequest,
+    request: Request,
+    response: Response,
+    service: PasswordResetApplicationService = Depends(get_password_reset_application_service),
+) -> PasswordResetRequestResponse | JSONResponse:
+    """Request an anonymous reset token without creating authentication state."""
+
+    try:
+        service.request(
+            payload.email,
+            request.client.host if request.client else "unknown",
+            correlation_context.get(),
+        )
+    except PasswordResetRateLimitedError as error:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too many password reset attempts"},
+            headers={"Retry-After": str(error.retry_after), "Cache-Control": "no-store"},
+        )
+    except PasswordResetUnavailableError:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Password reset service unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return PasswordResetRequestResponse()
+
+
+@router.post(
+    "/password-reset/confirm",
+    response_model=PasswordResetConfirmResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        429: {"model": ErrorResponse, "description": "Password-reset rate limited"},
+        500: {"model": ErrorResponse, "description": "Password-reset unavailable"},
+    },
+    summary="Confirm an opaque password-reset token",
+)
+def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    request: Request,
+    response: Response,
+    service: PasswordResetApplicationService = Depends(get_password_reset_application_service),
+) -> PasswordResetConfirmResponse | JSONResponse:
+    """Replace credentials and revoke prior authentication without logging in."""
+
+    try:
+        service.confirm(
+            payload.token,
+            payload.password,
+            request.client.host if request.client else "unknown",
+        )
+    except PasswordResetRateLimitedError as error:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too many password reset attempts"},
+            headers={"Retry-After": str(error.retry_after), "Cache-Control": "no-store"},
+        )
+    except PasswordResetUnavailableError:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Password reset service unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return PasswordResetConfirmResponse()
+
+
+@router.post(
+    "/email-verification/confirm",
+    response_model=EmailVerificationConfirmResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        429: {"model": ErrorResponse, "description": "Email verification rate limited"},
+        500: {"model": ErrorResponse, "description": "Email verification unavailable"},
+    },
+    summary="Confirm an opaque email-verification challenge",
+)
+def confirm_email_verification(
+    payload: EmailVerificationConfirmRequest,
+    request: Request,
+    response: Response,
+    service: EmailVerificationApplicationService = Depends(get_email_verification_application_service),
+) -> EmailVerificationConfirmResponse | JSONResponse:
+    """Confirm anonymously without creating a session, cookies, or access token."""
+
+    try:
+        service.confirm(payload.token, request.client.host if request.client else "unknown")
+    except EmailVerificationRateLimitedError as error:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too many email verification attempts"},
+            headers={"Retry-After": str(error.retry_after), "Cache-Control": "no-store"},
+        )
+    except EmailVerificationUnavailableError:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Email verification service unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return EmailVerificationConfirmResponse()
+
+
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        429: {"model": ErrorResponse, "description": "Registration rate limited"},
+        500: {"model": ErrorResponse, "description": "Registration unavailable"},
+    },
+    summary="Request account registration without revealing account state",
+)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    service: RegistrationApplicationService = Depends(get_registration_application_service),
+) -> RegisterResponse | JSONResponse:
+    """Accept anonymous registration; no CSRF token is needed before a session exists."""
+
+    try:
+        service.submit(
+            payload.email,
+            payload.password,
+            request.client.host if request.client else "unknown",
+            correlation_context.get(),
+        )
+    except RegistrationRateLimitedError as error:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too many registration attempts"},
+            headers={"Retry-After": str(error.retry_after), "Cache-Control": "no-store"},
+        )
+    except RegistrationUnavailableError as error:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Registration service unavailable"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return RegisterResponse()
 
 
 @router.post(
@@ -131,6 +324,65 @@ def current_user(principal: AuthenticatedPrincipal = Depends(get_current_princip
         email_verified_at=principal.email_verified_at,
         created_at=principal.created_at,
     )
+
+
+@router.delete(
+    "/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        403: {"model": ErrorResponse, "description": "Invalid CSRF token"},
+        422: {"model": ErrorResponse, "description": "Invalid deletion confirmation"},
+        429: {"model": ErrorResponse, "description": "Account deletion rate limited"},
+        500: {"model": ErrorResponse, "description": "Account deletion unavailable"},
+    },
+    summary="Irreversibly anonymize the current account and block its workspace",
+)
+def delete_current_account(
+    payload: AccountDeletionRequest,
+    request: Request,
+    response: Response,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    csrf_cookie: str | None = Cookie(default=None, alias="gearia_csrf"),
+    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+    service: AccountAnonymizationApplicationService = Depends(
+        get_account_anonymization_application_service
+    ),
+    cookie_policy: CookiePolicy = Depends(get_cookie_policy),
+) -> Response:
+    """Own no SQL: invoke the application transaction then clear cookies centrally."""
+
+    try:
+        service.anonymize_account(
+            principal,
+            csrf_cookie,
+            csrf_header,
+            request.client.host if request.client else "unknown",
+        )
+    except AccountAnonymizationRateLimitedError as error:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too many account deletion attempts"},
+            headers={"Retry-After": str(error.retry_after), "Cache-Control": "no-store"},
+        )
+    except AccountAnonymizationCsrfError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account deletion failed",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except AccountAnonymizationUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Account deletion unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+
+    cookie_policy.clear(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @router.post(

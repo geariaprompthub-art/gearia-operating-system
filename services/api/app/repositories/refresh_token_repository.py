@@ -58,6 +58,17 @@ class RefreshTokenRepository:
         self._database.flush()
         return int(result.rowcount or 0)
 
+    def delete_for_sessions(self, session_ids: list[UUID]) -> int:
+        """Permanently remove refresh-token hashes for an anonymized account."""
+
+        if not session_ids:
+            return 0
+        result = self._database.execute(
+            AuthRefreshToken.__table__.delete().where(AuthRefreshToken.session_id.in_(session_ids))
+        )
+        self._database.flush()
+        return int(result.rowcount or 0)
+
     def exists_active_successor(self, token_id: UUID) -> bool:
         return self._database.scalar(
             select(AuthRefreshToken.id).where(

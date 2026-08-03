@@ -18,6 +18,7 @@ def test_production_settings_reject_insecure_debug_and_default_database() -> Non
             database_url="postgresql+psycopg://gearia:gearia@postgres:5432/gearia",
             trusted_hosts=["api.gearia.com.br"],
             cors_origins=["https://app.gearia.com.br"],
+            lifecycle_token_pepper="test-only-lifecycle-pepper",
         )
     except ValidationError as error:
         message = str(error)
@@ -35,6 +36,7 @@ def test_production_settings_accept_restricted_hosts_and_cors() -> None:
         database_url="postgresql+psycopg://app-user:strong-password@postgres:5432/gearia",
         trusted_hosts=["api.gearia.com.br"],
         cors_origins=["https://app.gearia.com.br"],
+        lifecycle_token_pepper="test-only-lifecycle-pepper",
     )
 
     assert settings.debug is False

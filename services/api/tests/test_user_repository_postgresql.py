@@ -66,12 +66,13 @@ def test_repository_persists_defaults_and_retrieves_by_id_and_email() -> None:
         assert repository.exists_by_normalized_email(created.email_normalized)
 
 
-def test_repository_rolls_back_after_duplicate_email_and_remains_usable() -> None:
+def test_transaction_boundary_rolls_back_after_duplicate_email_and_remains_usable() -> None:
     with SessionLocal() as session:
         repository = UserRepository(session)
         created = repository.create(make_user("duplicate"))
+        session.commit()
 
-        with pytest.raises(EmailAlreadyExistsError):
+        with pytest.raises(IntegrityError):
             repository.create(
                 make_user(
                     "duplicate",
@@ -79,6 +80,7 @@ def test_repository_rolls_back_after_duplicate_email_and_remains_usable() -> Non
                 )
             )
 
+        session.rollback()
         assert repository.get_by_id(created.id) is not None
         assert session.is_active
 
