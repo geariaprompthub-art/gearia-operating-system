@@ -63,13 +63,23 @@ jobs:
           alembic upgrade head
           test "$(alembic heads)" = "20260730_0010 (head)"
           test "$(alembic current)" = "20260730_0010 (head)"
+      - name: Verify API import path
+        run: python -c "import app; print(app.__file__)"
       - name: Run complete API suite
         run: |
           set -o pipefail
-          pytest -q | tee /tmp/api-pytest.log
+          python -m pytest -q | tee /tmp/api-pytest.log
           test "${PIPESTATUS[0]}" -eq 0
           ! grep -Eq '[1-9][0-9]* failed' /tmp/api-pytest.log
           grep -Eq '(56[89]|5[7-9][0-9]|[6-9][0-9]{2,}) passed' /tmp/api-pytest.log
+      - name: Upload API pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-pytest-log
+          path: /tmp/api-pytest.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Build API image
         run: docker build --target runtime -t gearia-api-p2b-ci .
 
