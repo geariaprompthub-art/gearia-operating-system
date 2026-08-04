@@ -182,11 +182,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-      - name: Validate whitespace and locked web inputs
+          fetch-depth: 0
+      - name: Resolve accumulated P2A/P2B base
         run: |
-          git diff --check HEAD^ HEAD
-          git diff --exit-code HEAD^ HEAD -- \
+          git rev-parse --verify origin/main
+          BASE_SHA="$(git merge-base origin/main HEAD)"
+          test -n "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'P2B_BASE_SHA=%s\n' "$BASE_SHA" >> "$GITHUB_ENV"
+      - name: Validate accumulated whitespace and locked web inputs
+        run: |
+          git diff --check "$P2B_BASE_SHA" HEAD
+          git diff --exit-code "$P2B_BASE_SHA" HEAD -- \
             apps/web/Dockerfile \
             apps/web/package.json \
             apps/web/package-lock.json
@@ -200,4 +207,6 @@ jobs:
           test -z "$(git ls-files '*.pem' '*.cer' '*.crt')"
           test "$(find services/api/migrations/versions -maxdepth 1 -type f -name '*.py' | wc -l)" -eq 10
           test -f services/api/migrations/versions/20260730_0010_add_user_lifecycle_tokens.py
-          ! git diff --name-only HEAD^ HEAD -- services/api/migrations/versions | grep -Ev '/20260729_0009_|/20260730_0010_'
+          migration_changes="$(git diff --name-status "$P2B_BASE_SHA" HEAD -- services/api/migrations/versions)"
+          expected_changes=$'A\tservices/api/migrations/versions/20260729_0009_create_workspace_tenancy.py\nA\tservices/api/migrations/versions/20260730_0010_add_user_lifecycle_tokens.py'
+          test "$migration_changes" = "$expected_changes"
