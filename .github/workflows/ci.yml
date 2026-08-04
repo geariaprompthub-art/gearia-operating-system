@@ -41,7 +41,9 @@ jobs:
       - run: python -m compileall -q app
       - run: alembic upgrade head
       - run: alembic current
-      - run: pytest -q
+      - name: Verify API import path
+        run: python -c "import app; print(app.__file__)"
+      - run: python -m pytest -q
       - name: Basic secret scan
         run: |
           ! git grep -nEi 'sk-[a-z0-9]{20,}|voyage-[a-z0-9]{20,}' -- ':!*.lock'
