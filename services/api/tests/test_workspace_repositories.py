@@ -95,7 +95,16 @@ def test_workspace_source_links_scope_visibility_and_projection_without_canonica
 
     verification = SessionLocal()
     try:
-        assert verification.scalar(text("SELECT count(*) FROM workspaces WHERE name LIKE 'Personal workspace'")) == 0
+        assert verification.scalar(
+            text(
+                "SELECT count(*) FROM workspaces w JOIN users u ON u.id = w.owner_user_id "
+                "WHERE u.email_normalized IN (:first_email, :second_email)"
+            ),
+            {
+                "first_email": f"p2a-first-{marker}@test.local",
+                "second_email": f"p2a-second-{marker}@test.local",
+            },
+        ) == 0
     finally:
         verification.close()
 

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -22,7 +22,12 @@ class Workspace(Base):
 
     __tablename__ = "workspaces"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", name="uq_workspaces_owner_user"),
+        Index(
+            "uq_workspaces_personal_owner_user_active",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("owner_user_id IS NOT NULL"),
+        ),
         CheckConstraint("length(trim(name)) > 0", name="ck_workspaces_name_nonempty"),
         CheckConstraint(
             "status IN ('active','blocked_by_owner_anonymization')",
@@ -31,8 +36,11 @@ class Workspace(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    owner_user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[str] = mapped_column(
