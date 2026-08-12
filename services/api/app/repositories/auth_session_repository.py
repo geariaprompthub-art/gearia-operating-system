@@ -57,6 +57,18 @@ class AuthSessionRepository:
             )
         )
 
+    def get_active_for_principal(self, session_id: UUID, user_id: UUID) -> AuthSession | None:
+        """Return only the active session bound to the authenticated principal."""
+
+        return self._database.scalar(
+            select(AuthSession).where(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > datetime.now(UTC),
+            )
+        )
+
     def revoke(self, session: AuthSession, reason: str) -> None:
         if session.revoked_at is None:
             session.revoked_at = datetime.now(UTC)

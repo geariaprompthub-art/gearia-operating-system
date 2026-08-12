@@ -27,3 +27,8 @@ class CsrfService:
             and all(character in "0123456789abcdef" for character in expected_hash)
             and hmac.compare_digest(self.hash(submitted), expected_hash)
         )
+
+    def valid_pair(self, cookie_value: object, header_value: object, expected_hash: object) -> bool:
+        """Validate the bound double-submit pair without exposing either value."""
+
+        return self.valid(cookie_value, expected_hash) and self.valid(header_value, expected_hash)

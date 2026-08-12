@@ -26,6 +26,10 @@ from app.services.email_verification_application_service import EmailVerificatio
 from app.services.password_reset_application_service import PasswordResetApplicationService
 from app.services.account_anonymization_application_service import AccountAnonymizationApplicationService
 from app.services.workspace_service import WorkspaceService
+from app.repositories.organization_membership_repository import OrganizationMembershipRepository
+from app.repositories.organization_repository import OrganizationRepository
+from app.repositories.workspace_repository import WorkspaceRepository
+from app.services.personal_organization_provisioning_service import PersonalOrganizationProvisioningService
 from app.core.logging import get_structured_logger
 
 
@@ -114,7 +118,11 @@ def get_registration_application_service(
     registration_service = RegistrationService(
         database,
         IdentityService(database, get_password_hasher()),
-        WorkspaceService(database),
+        PersonalOrganizationProvisioningService(
+            OrganizationRepository(database),
+            OrganizationMembershipRepository(database),
+            WorkspaceRepository(database),
+        ),
         get_lifecycle_token_service(database),
     )
     return RegistrationApplicationService(

@@ -23,6 +23,9 @@ from app.routers.scout import router as scout_router
 from app.routers.sources import router as sources_router
 from app.routers.auth import router as auth_router
 from app.routers.workspaces import router as workspaces_router
+from app.routers.organizations import router as organizations_router
+from app.routers.organization_invitations import accept_router as organization_invitation_accept_router, organization_router as organization_invitation_router
+from app.routers.organization_workspaces import router as organization_workspaces_router
 from app.services.hybrid_reranking_pipeline import RerankingPipelineHydrationError
 from app.services.reranking_provider_errors import (
     RerankingProviderConfigurationError,
@@ -161,6 +164,10 @@ def create_app(*, structured_logger: SafeStructuredLogger | None = None) -> Fast
     application.include_router(scout_router)
     application.include_router(auth_router)
     application.include_router(workspaces_router)
+    application.include_router(organizations_router)
+    application.include_router(organization_invitation_router)
+    application.include_router(organization_invitation_accept_router)
+    application.include_router(organization_workspaces_router)
 
     @application.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:
