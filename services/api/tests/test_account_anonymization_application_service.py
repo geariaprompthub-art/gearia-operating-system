@@ -14,6 +14,7 @@ from app.db import Base, SessionLocal as PostgresSessionLocal
 from app.models.auth_refresh_token import AuthRefreshToken
 from app.models.auth_session import AuthSession
 from app.models.lifecycle_tokens import EmailVerificationToken, PasswordResetToken
+from app.models.organization import Organization, OrganizationMembership
 from app.models.user import User, UserStatus
 from app.models.workspace import Workspace, WorkspaceStatus
 from app.repositories.auth_session_repository import AuthSessionRepository
@@ -75,7 +76,9 @@ def _state(database: Session, *, prefix: str = "anonymize") -> tuple[User, Works
         last_login_at=datetime.now(UTC),
     )
     database.add(user); database.flush()
-    workspace = Workspace(owner_user_id=user.id, name="Personal workspace")
+    organization = Organization(kind="personal", name="Personal workspace", slug=f"personal-{user.id.hex}", personal_owner_user_id=user.id)
+    database.add(organization); database.flush()
+    workspace = Workspace(owner_user_id=user.id, organization_id=organization.id, name="Personal workspace")
     csrf, csrf_hash = CsrfService().issue()
     session = AuthSession(
         user_id=user.id,
@@ -189,7 +192,9 @@ def test_original_email_is_available_to_a_new_unrelated_user_after_anonymization
         _service(database).anonymize_account(_principal(user, session), csrf, csrf, "127.0.0.1")
         replacement = User(email=original_email, email_normalized=original_email, password_hash="new-hash", status=UserStatus.PENDING_VERIFICATION)
         database.add(replacement); database.flush()
-        replacement_workspace = Workspace(owner_user_id=replacement.id, name="Personal workspace")
+        replacement_organization = Organization(kind="personal", name="Personal workspace", slug=f"personal-{replacement.id.hex}", personal_owner_user_id=replacement.id)
+        database.add(replacement_organization); database.flush()
+        replacement_workspace = Workspace(owner_user_id=replacement.id, organization_id=replacement_organization.id, name="Personal workspace")
         database.add(replacement_workspace); database.commit()
         assert replacement.id != user.id and replacement_workspace.owner_user_id == replacement.id
         assert workspace.owner_user_id == user.id
@@ -228,6 +233,9 @@ def test_postgresql_concurrent_delete_keeps_one_consistent_anonymized_state() ->
             cleanup.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id))
             cleanup.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
             cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            organization_ids = select(Organization.id).where(Organization.personal_owner_user_id == user_id)
+            cleanup.execute(delete(OrganizationMembership).where(OrganizationMembership.organization_id.in_(organization_ids)))
+            cleanup.execute(delete(Organization).where(Organization.id.in_(organization_ids)))
             cleanup.execute(delete(User).where(User.id == user_id))
             cleanup.commit()
 
@@ -281,6 +289,9 @@ def test_postgresql_delete_and_password_reset_cannot_restore_anonymized_credenti
             cleanup.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id))
             cleanup.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
             cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            organization_ids = select(Organization.id).where(Organization.personal_owner_user_id == user_id)
+            cleanup.execute(delete(OrganizationMembership).where(OrganizationMembership.organization_id.in_(organization_ids)))
+            cleanup.execute(delete(Organization).where(Organization.id.in_(organization_ids)))
             cleanup.execute(delete(User).where(User.id == user_id))
             cleanup.commit()
 
@@ -350,5 +361,8 @@ def test_postgresql_delete_and_refresh_cannot_resurrect_anonymized_account() -> 
             cleanup.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id))
             cleanup.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
             cleanup.execute(delete(Workspace).where(Workspace.id == workspace_id))
+            organization_ids = select(Organization.id).where(Organization.personal_owner_user_id == user_id)
+            cleanup.execute(delete(OrganizationMembership).where(OrganizationMembership.organization_id.in_(organization_ids)))
+            cleanup.execute(delete(Organization).where(Organization.id.in_(organization_ids)))
             cleanup.execute(delete(User).where(User.id == user_id))
             cleanup.commit()

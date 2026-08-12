@@ -23,6 +23,9 @@ class EmailDeliveryAdapter(Protocol):
     ) -> None:
         """Request reset delivery without persisting or logging token material."""
 
+    def send_organization_invitation(self, recipient: str, raw_token: str, correlation_id: str | None) -> None:
+        """Request organization-invitation delivery after its transaction commits."""
+
 
 @dataclass(frozen=True)
 class FakeEmailDelivery:
@@ -67,4 +70,15 @@ class FakeEmailDeliveryAdapter:
         if self._capture_deliveries:
             self.deliveries.append(
                 FakeEmailDelivery(recipient, raw_token, correlation_id, "password_reset")
+            )
+
+    def send_organization_invitation(
+        self, recipient: str, raw_token: str, correlation_id: str | None
+    ) -> None:
+        self.call_count += 1
+        if self._fail:
+            raise RuntimeError("controlled email delivery failure")
+        if self._capture_deliveries:
+            self.deliveries.append(
+                FakeEmailDelivery(recipient, raw_token, correlation_id, "organization_invitation")
             )

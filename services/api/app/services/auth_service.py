@@ -329,7 +329,7 @@ class AuthService:
             raise RefreshRateLimitedError(decision.retry_after)
 
     def _csrf_valid(self, csrf_cookie: object, csrf_header: object, expected_hash: str) -> bool:
-        return self._csrf_service.valid(csrf_cookie, expected_hash) and self._csrf_service.valid(csrf_header, expected_hash)
+        return self._csrf_service.valid_pair(csrf_cookie, csrf_header, expected_hash)
 
     @staticmethod
     def _expired(value: datetime) -> bool:

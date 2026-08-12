@@ -88,8 +88,7 @@ class AccountAnonymizationApplicationService:
             session is None
             or session.user_id != principal.user_id
             or session.revoked_at is not None
-            or not self._csrf.valid(csrf_cookie, session.csrf_secret_hash)
-            or not self._csrf.valid(csrf_header, session.csrf_secret_hash)
+            or not self._csrf.valid_pair(csrf_cookie, csrf_header, session.csrf_secret_hash)
         ):
             raise AccountAnonymizationCsrfError("invalid account deletion csrf")
 

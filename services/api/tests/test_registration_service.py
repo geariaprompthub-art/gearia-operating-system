@@ -9,30 +9,58 @@ from app.db import SessionLocal
 from app.models.lifecycle_tokens import EmailVerificationToken
 from app.models.user import User
 from app.models.workspace import Workspace
+from app.models.organization import Organization, OrganizationInvitation, OrganizationMembership
 from app.services.identity_service import IdentityService
 from app.services.lifecycle_token_service import LifecycleTokenService
 from app.services.password_hasher import PasswordHashingService
 from app.services.registration_service import RegistrationService
-from app.services.workspace_service import WorkspaceService
 from app.repositories.registration_coordination_repository import RegistrationCoordinationRepository
+from app.repositories.organization_membership_repository import OrganizationMembershipRepository
+from app.repositories.organization_repository import OrganizationRepository
+from app.repositories.workspace_repository import WorkspaceRepository
+from app.services.personal_organization_provisioning_service import PersonalOrganizationProvisioningService
+
+
+def _provisioning(database):
+    return PersonalOrganizationProvisioningService(
+        OrganizationRepository(database), OrganizationMembershipRepository(database), WorkspaceRepository(database)
+    )
+
+
+def _cleanup_user(database, user_id) -> None:
+    organization_ids = select(Organization.id).where(Organization.personal_owner_user_id == user_id)
+    membership_ids = select(OrganizationMembership.id).where(
+        OrganizationMembership.organization_id.in_(organization_ids)
+    )
+    database.execute(delete(OrganizationInvitation).where(OrganizationInvitation.organization_id.in_(organization_ids)))
+    database.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id))
+    database.execute(delete(Workspace).where(Workspace.owner_user_id == user_id))
+    database.execute(delete(OrganizationMembership).where(OrganizationMembership.id.in_(membership_ids)))
+    database.execute(delete(Organization).where(Organization.id.in_(organization_ids)))
+    database.execute(delete(User).where(User.id == user_id))
 
 
 def test_registration_commits_user_workspace_and_hash_only_token_atomically() -> None:
     database = SessionLocal()
     try:
-        service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), WorkspaceService(database), LifecycleTokenService(database, "test-pepper"))
+        service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), _provisioning(database), LifecycleTokenService(database, "test-pepper"))
         result = service.register("registration@example.com", "valid password")
         assert result.registration_state == "created"
         assert result.raw_verification_token not in repr(database.get(User, result.user_id))
-        assert database.get(Workspace, result.workspace_id).owner_user_id == result.user_id
+        workspace = database.get(Workspace, result.workspace_id)
+        assert workspace.owner_user_id == result.user_id and workspace.organization_id is not None
+        organization = database.get(Organization, workspace.organization_id)
+        assert organization is not None and organization.personal_owner_user_id == result.user_id
+        owner = database.scalar(select(OrganizationMembership).where(OrganizationMembership.organization_id == organization.id))
+        assert owner is not None and owner.user_id == result.user_id and owner.role == "owner"
         token = database.scalar(select(EmailVerificationToken).where(EmailVerificationToken.user_id == result.user_id))
         assert token is not None and token.token_hash != result.raw_verification_token
     finally:
-        database.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == result.user_id)); database.execute(delete(Workspace).where(Workspace.owner_user_id == result.user_id)); database.execute(delete(User).where(User.id == result.user_id)); database.commit(); database.close()
+        _cleanup_user(database, result.user_id); database.commit(); database.close()
 
 
 def _service(database):
-    return RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), WorkspaceService(database), LifecycleTokenService(database, "test-pepper"))
+    return RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), _provisioning(database), LifecycleTokenService(database, "test-pepper"))
 
 
 def test_advisory_key_is_stable_namespaced_and_signed_bigint() -> None:
@@ -61,13 +89,15 @@ def test_two_real_postgresql_sessions_converge_first_registration() -> None:
             user_id, workspace_id = results[0]
             assert database.get(User, user_id) is not None
             assert database.get(Workspace, workspace_id) is not None
+            assert database.scalar(select(Organization).where(Organization.personal_owner_user_id == user_id)) is not None
+            assert database.scalar(select(OrganizationMembership).where(OrganizationMembership.user_id == user_id, OrganizationMembership.revoked_at.is_(None))) is not None
             tokens = list(database.scalars(select(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id)))
             assert sum(token.invalidated_at is None and token.used_at is None for token in tokens) == 1
     finally:
         if results:
             with SessionLocal() as database:
                 user_id, _ = results[0]
-                database.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == user_id)); database.execute(delete(Workspace).where(Workspace.owner_user_id == user_id)); database.execute(delete(User).where(User.id == user_id)); database.commit()
+                _cleanup_user(database, user_id); database.commit()
 
 
 def test_two_real_postgresql_sessions_converge_pending_reissuance() -> None:
@@ -89,16 +119,17 @@ def test_two_real_postgresql_sessions_converge_pending_reissuance() -> None:
             tokens = list(session.scalars(select(EmailVerificationToken).where(EmailVerificationToken.user_id == seed.user_id)))
             assert len(tokens) == 3
             assert sum(token.invalidated_at is None and token.used_at is None for token in tokens) == 1
+            assert database.scalar(select(Organization).where(Organization.personal_owner_user_id == seed.user_id)) is not None
     finally:
         with SessionLocal() as session:
-            session.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == seed.user_id)); session.execute(delete(Workspace).where(Workspace.owner_user_id == seed.user_id)); session.execute(delete(User).where(User.id == seed.user_id)); session.commit()
+            _cleanup_user(session, seed.user_id); session.commit()
 
 
 def test_workspace_failure_rolls_back_new_user_and_registration_state(monkeypatch) -> None:
     database = SessionLocal(); email = "rollback-registration@example.com"
-    workspace = WorkspaceService(database)
-    monkeypatch.setattr(workspace, "get_or_provision_personal_workspace", lambda _: (_ for _ in ()).throw(RuntimeError("controlled failure")))
-    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), workspace, LifecycleTokenService(database, "test-pepper"))
+    provisioning = _provisioning(database)
+    monkeypatch.setattr(provisioning, "provision_for_user", lambda _: (_ for _ in ()).throw(RuntimeError("controlled failure")))
+    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), provisioning, LifecycleTokenService(database, "test-pepper"))
     try:
         import pytest
         with pytest.raises(RuntimeError, match="controlled failure"):
@@ -130,7 +161,7 @@ def test_failure_immediately_before_commit_rolls_back_flushed_user_workspace_and
 def test_token_public_contract_failure_rolls_back_after_workspace(monkeypatch) -> None:
     database = SessionLocal(); email = "rollback-after-workspace@example.com"; tokens = LifecycleTokenService(database, "test-pepper")
     monkeypatch.setattr(tokens, "issue_email_verification", lambda *_: (_ for _ in ()).throw(RuntimeError("token failure")))
-    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), WorkspaceService(database), tokens)
+    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), _provisioning(database), tokens)
     try:
         import pytest
         with pytest.raises(RuntimeError, match="token failure"):
@@ -148,7 +179,7 @@ def test_reissuance_failure_after_token_flush_restores_previous_active_token(mon
         original(*args)
         raise RuntimeError("after token flush")
     monkeypatch.setattr(tokens, "issue_email_verification", fail_after_issue)
-    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), WorkspaceService(database), tokens)
+    service = RegistrationService(database, IdentityService(database, PasswordHashingService(time_cost=1, memory_cost=1024, parallelism=1)), _provisioning(database), tokens)
     try:
         import pytest
         with pytest.raises(RuntimeError, match="after token flush"):
@@ -157,4 +188,4 @@ def test_reissuance_failure_after_token_flush_restores_previous_active_token(mon
         assert len(rows) == 1 and rows[0].invalidated_at is None
         assert database.get(Workspace, seed.workspace_id) is not None and database.is_active
     finally:
-        database.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == seed.user_id)); database.execute(delete(Workspace).where(Workspace.owner_user_id == seed.user_id)); database.execute(delete(User).where(User.id == seed.user_id)); database.commit(); database.close()
+        _cleanup_user(database, seed.user_id); database.commit(); database.close()

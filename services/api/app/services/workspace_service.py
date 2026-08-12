@@ -5,8 +5,14 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.source import Source
+from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceStatus
+from app.repositories.organization_membership_repository import OrganizationMembershipRepository
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.workspace_repository import WorkspaceRepository
+from app.services.personal_organization_provisioning_service import (
+    PersonalOrganizationProvisioningService,
+)
 from app.repositories.workspace_source_repository import WorkspaceSourceRepository
 from app.services.workspace_context import WorkspaceContext
 from app.services.workspace_visibility_projection_service import WorkspaceVisibilityProjectionService
@@ -32,14 +38,28 @@ class WorkspaceService:
         self._repository = repository or WorkspaceRepository(database)
 
     def provision_personal_workspace(self, user_id: UUID, name: str = "Personal workspace") -> Workspace:
-        """Stage the single P2A workspace for an existing user; caller owns transaction."""
+        """Stage the single personal ownership graph; caller owns transaction."""
 
         if self._repository.get_by_owner_user_id(user_id) is not None:
             raise ValueError("personal workspace already exists")
         normalized_name = name.strip()
         if not normalized_name:
             raise ValueError("workspace name must not be empty")
-        return self._repository.create(Workspace(owner_user_id=user_id, name=normalized_name))
+        user = self._database.get(User, user_id)
+        if user is None:
+            raise WorkspaceNotFoundError("workspace owner not found")
+        provisioner = PersonalOrganizationProvisioningService(
+            organization_repository=OrganizationRepository(self._database),
+            membership_repository=OrganizationMembershipRepository(self._database),
+            workspace_repository=self._repository,
+        )
+        result = provisioner.provision_for_user(user)
+        workspace = self._repository.get_by_id(result.workspace_id)
+        if workspace is None:
+            raise WorkspaceNotFoundError("workspace not found")
+        workspace.name = normalized_name
+        self._database.flush()
+        return workspace
 
     def get_or_provision_personal_workspace(self, user_id: UUID) -> Workspace:
         """Return the unique personal workspace or stage it in the caller transaction."""
@@ -50,7 +70,7 @@ class WorkspaceService:
         """Resolve the aggregate root only when the context owner matches its workspace."""
 
         workspace = self._repository.get_by_id(context.workspace_id)
-        if workspace is None or workspace.owner_user_id != context.user_id:
+        if workspace is None or (context.organization_id is not None and workspace.organization_id != context.organization_id):
             raise WorkspaceNotFoundError("workspace not found")
         if workspace.status != WorkspaceStatus.ACTIVE:
             raise WorkspaceBlockedError("workspace is unavailable")
