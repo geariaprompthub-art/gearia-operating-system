@@ -11,6 +11,10 @@ class WorkspaceContext:
 
     workspace_id: UUID
     user_id: UUID
+    organization_id: UUID | None = None
+    organization_kind: str | None = None
+    organization_membership_id: UUID | None = None
+    organization_role: str | None = None
 
 
 @dataclass(frozen=True)

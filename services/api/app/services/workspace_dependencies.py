@@ -6,10 +6,14 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.repositories.workspace_content_visibility_repository import WorkspaceContentVisibilityRepository
 from app.repositories.workspace_repository import WorkspaceRepository
+from app.repositories.organization_repository import OrganizationRepository
+from app.repositories.organization_membership_repository import OrganizationMembershipRepository
 from app.repositories.workspace_source_repository import WorkspaceSourceRepository
 from app.services.access_token_authenticator import AuthenticatedPrincipal
 from app.services.principal_dependencies import get_current_principal
 from app.services.workspace_context import WorkspaceContext
+from app.services.organization_context_resolver import OrganizationContextResolver, OrganizationContextUnavailableError
+from app.services.workspace_context_resolver import WorkspaceContextResolver, WorkspaceContextUnavailableError
 from app.models.workspace import WorkspaceStatus
 from app.services.workspace_service import WorkspaceNotFoundError, WorkspaceService, WorkspaceSourceService
 from app.services.workspace_visibility_projection_service import WorkspaceVisibilityProjectionService
@@ -29,7 +33,15 @@ def get_workspace_context(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     if workspace.status != WorkspaceStatus.ACTIVE:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace unavailable")
-    return WorkspaceContext(workspace_id=workspace.id, user_id=principal.user_id)
+    organizations = OrganizationContextResolver(OrganizationRepository(database), OrganizationMembershipRepository(database))
+    try:
+        organization = organizations.resolve_personal_for_user(principal.user_id)
+        context = WorkspaceContextResolver(WorkspaceRepository(database), organizations).resolve(principal.user_id, workspace.id)
+    except (OrganizationContextUnavailableError, WorkspaceContextUnavailableError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace unavailable") from error
+    if workspace.organization_id != organization.organization_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace unavailable")
+    return context
 
 
 def get_workspace_service(database: Session = Depends(get_db)) -> WorkspaceService:

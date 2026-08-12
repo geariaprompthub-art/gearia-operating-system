@@ -31,3 +31,16 @@ class WorkspaceSourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_id: UUID
+
+
+class OrganizationWorkspaceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=120)
+
+
+class OrganizationWorkspaceRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    organization_id: UUID
+    name: str
+    status: str
